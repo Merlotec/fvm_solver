@@ -10,9 +10,18 @@ class BCMode(Enum):
     FarfieldBlended = "Farfield_Blended"
 
 
+class ConfigBC(ABC):
+    mode: BCMode
+    # Farfield physical parameters
+    v_n_inf: float
+    v_t_inf: float
+    rho_inf: float
+    T_inf: float
+
+
 @dataclass
 class ConfigFVM(ABC):
-    device: str = "cuda"
+    device: str = "cpu"
     compile: bool = True
 
     problem_setup: str = None    # {ellipse, nozzle}
@@ -30,8 +39,11 @@ class ConfigFVM(ABC):
     lnscale: float = None
 
     # Save configuration
+    plot: bool = True      # Set False to disable matplotlib windows
     plot_t: float = None   # Time interval between plots
     save_t: float = None    # Time interval between saves
+    save_dir: str = None    # Override output directory (default: auto timestamp under artefacts/fvm_saves)
+    exact_interval: bool = False  # If True, clamp dt to land exactly on save_t boundaries
     print_i: int = None   # Iterations between print statements
     end_t: float = None       # Max simulation time.
 
@@ -52,15 +64,6 @@ class ConfigFVM(ABC):
     # Boundary Configuration
     exit_cfg: ConfigBC = None
     inlet_cfg: ConfigBC = None
-
-
-class ConfigBC(ABC):
-    mode: BCMode
-    # Farfield physical parameters
-    v_n_inf: float
-    v_t_inf: float
-    rho_inf: float
-    T_inf: float
 
 
 # ------------------------------- Ellipse-specific configurations -------------------------------

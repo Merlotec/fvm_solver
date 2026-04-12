@@ -50,8 +50,9 @@ class Saver:
         # Save to file.
         # Normalise the primatives and bc_vals and save as fp16
         prim_mean, prim_std = primatives.mean(dim=0, keepdim=True), primatives.std(dim=0, keepdim=True)
-        prim_scale = (primatives - prim_mean) / prim_std
-        bc_scale = (bc_vals - prim_mean) / prim_std
+        prim_std_safe = prim_std.clamp(min=1e-8)
+        prim_scale = (primatives - prim_mean) / prim_std_safe
+        bc_scale = (bc_vals - prim_mean) / prim_std_safe
         values = {"t": t.cpu().item(),
                     "prim_mean": prim_mean.cpu().numpy(), "prim_std": prim_std.cpu().numpy(),
                     "cell_primatives": prim_scale.cpu().half().numpy(), "bc_primatives": bc_scale.cpu().half().numpy()}

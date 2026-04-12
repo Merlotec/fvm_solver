@@ -63,8 +63,10 @@ class TSolver(ABC):
         self.eq = eq
         self.print_i = cfg.print_i
         self.plot_t = cfg.plot_t
+        self.plot = cfg.plot
         self.save_t = cfg.save_t
-        self.saver = Saver(self.eq.E_props)
+        self.exact_interval = cfg.exact_interval
+        self.saver = Saver(self.eq.E_props, save_dir=cfg.save_dir)
 
         # replace self._solve_step with compiled version if needed
         if cfg.compile:
@@ -79,51 +81,74 @@ class TSolver(ABC):
         """
         self.dt = torch.tensor(self.dt, device=self.device)
         next_plot_t = 0 # self.plot_t
-        next_save_t = self.save_t
+        save_count = 1
+        next_save_t = self.save_t  # always derived as save_count * save_t to avoid float drift
+
+        # Warmup: trigger torch.compile tracing before the timed loop.
+        c_print("Compiling...", color="bright_magenta")
+        _state_backup = self.cells.state.clone()
+        self._solve_step(self.dt)
+        self.cells.state = _state_backup
+        c_print("Compiled.", color="bright_magenta")
+
+        # Save initial state at t=0 before any stepping
+        c_print('saving: t=0', color="bright_cyan")
+        primatives_init = self.cells.get_values()[0]
+        self.saver.save(torch.tensor(0.0, device=self.device), self.eq.E_props, primatives_init)
 
         st_time = time.time()
         t, dts = 0., []
         for i in range(self.n_steps):
-            t += self.dt
-            self._solve_step(t)
+            # If exact_interval, clamp dt so we land exactly on the next save boundary.
+            # After the clamped step, restore dt so the adaptive solver continues normally.
+            if self.exact_interval and t + self.dt > next_save_t:
+                dt_saved = self.dt.clone()
+                self.dt = torch.tensor(next_save_t - t, device=self.device, dtype=self.dt.dtype)
+                t += self.dt
+                self._solve_step(t)
+                self.dt = dt_saved
+            else:
+                t += self.dt
+                self._solve_step(t)
             dts.append(self.dt)
 
             if i % self.print_i == 0:
                 irl_time = (time.time() - st_time)/self.print_i
                 avg_dt = sum(dts[-self.print_i:]) / len(dts[-self.print_i:])
                 avg_dt = avg_dt.item()
-                c_print(f'{i = }, {t = :.4g}, {avg_dt = :.3g}, {irl_time = :.3g}', color="bright_green")
+                c_print(f'progress: {i = }, {t = :.4g}, {avg_dt = :.3g}, {irl_time = :.3g}', color="bright_green")
                 st_time = time.time()
 
             if t >= next_plot_t:
                 next_plot_t = t + self.plot_t
-                c_print(f'{t = :.5g}', color="bright_yellow")
-
                 primatives = self.cells.get_values()[0]
-                Xlims = None # [[3.1, 3.4], [-1.8, -1.6]] #, [(0, 1), [0, 0.5]]  #
-                #
-                titles = ["Vx", "Vy", "rho", "T"]
-                titles = [f'{title} at {t=:4g}' for title in titles]
-                self.eq.plot_interp(primatives[:, :], title=titles, Xlims=Xlims)
+                if self.plot:
+                    c_print(f'plot: {t = :.5g}', color="bright_yellow")
+                    Xlims = None # [[3.1, 3.4], [-1.8, -1.6]] #, [(0, 1), [0, 0.5]]  #
+                    titles = ["Vx", "Vy", "rho", "T"]
+                    titles = [f'{title} at {t=:4g}' for title in titles]
+                    self.eq.plot_interp(primatives[:, :], title=titles, Xlims=Xlims)
 
                 if torch.any(torch.isnan(primatives)):
                     print("Nan in primatives")
                     exit(9)
 
             if t >= next_save_t:
-                next_save_t = t + self.save_t
-                c_print(f'Saving at t={t:.5g}', color="bright_cyan")
+                save_count += 1
+                next_save_t = save_count * self.save_t
+                c_print(f'saving: t={t:.5g}', color="bright_cyan")
                 primatives = self.cells.get_values()[0]
                 self.saver.save(t, self.eq.E_props, primatives)
 
         dts = torch.stack(dts).cpu()
-        kernel_size = 10
-        kernel = torch.ones(1, 1, kernel_size) / kernel_size
-        dts_smooth = torch.nn.functional.conv1d(dts.unsqueeze(0).unsqueeze(0), kernel, padding="valid")[0][0]
         print(f'{dts[500:].mean() = }')
-        plt.plot(dts)
-        plt.plot(dts_smooth)
-        plt.show()
+        if self.plot:
+            kernel_size = 10
+            kernel = torch.ones(1, 1, kernel_size) / kernel_size
+            dts_smooth = torch.nn.functional.conv1d(dts.unsqueeze(0).unsqueeze(0), kernel, padding="valid")[0][0]
+            plt.plot(dts)
+            plt.plot(dts_smooth)
+            plt.show()
 
 
     # def _save_meshio(self, primatives):

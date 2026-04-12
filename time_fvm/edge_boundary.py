@@ -1,10 +1,11 @@
+from __future__ import annotations
 from typing import TYPE_CHECKING
 import torch
+from torch import Tensor
 
 from time_fvm.config_fvm import ConfigFVM, BCMode, ConfigBC
 from time_fvm.sparse_utils import to_csr
 if TYPE_CHECKING:
-    from torch import Tensor
     from time_fvm.edge_process import FVMEdgeInfo
     from time_fvm.fvm_equation import PhysicalSetup
 
