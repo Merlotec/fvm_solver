@@ -4,6 +4,8 @@ numpy
 scipy
 codetiming
 torch
+dash
+plotly
 
 #torch_geometric
 #torch_sparse
