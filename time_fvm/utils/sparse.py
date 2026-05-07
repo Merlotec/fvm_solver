@@ -1,4 +1,73 @@
 import torch
+from abc import ABC, abstractmethod
+
+from time_fvm.utils.ell_kernel import csr_to_ell, ell_spmm, ell_spmv
+
+
+class SPM(ABC):
+    """ Sparse matrix. """
+    def __init__(self, A, device):
+        self.shape = A.shape
+        self.device = device
+
+    @abstractmethod
+    def spMV(self, x: torch.Tensor, b: torch.Tensor=None) -> torch.Tensor:
+        """ Sparse matrix-vector multiply: Ax+b """
+        raise NotImplementedError("SPM is an abstract base class")
+
+    @abstractmethod
+    def spMM(self, X: torch.Tensor, b: torch.Tensor=None) -> torch.Tensor:
+        """ Sparse matrix-matrix multiply: Ax+b"""
+        raise NotImplementedError("SPM is an abstract base class")
+
+
+class SPMCuda(SPM):
+    """ Use triton accelerated ELL format for sparse matrix operations on CUDA. """
+    def __init__(self, A: torch.Tensor, device):
+        super().__init__(A, device)
+        if A.layout != torch.sparse_csr:
+            A = A.to_sparse_csr()
+
+        A = A.to(device)
+        self.vals, self.cols = csr_to_ell(A)
+
+    def spMM(self, X: torch.Tensor, b: torch.Tensor=None) -> torch.Tensor:
+        return ell_spmm(self.vals, self.cols, X, b=b)
+
+    def spMV(self, x: torch.Tensor, b: torch.Tensor=None) -> torch.Tensor:
+        return ell_spmv(self.vals, self.cols, x, b=b)
+
+
+class SPMGeneral(SPM):
+    """ Normal sparse matrix, directly using pytorch sparse operations. """
+    def __init__(self, A: torch.Tensor, device):
+        super().__init__(A, device)
+        if A.layout != torch.sparse_csr:
+            A = A.to_sparse_csr()
+
+        A = A.to(device)
+        self.A = torch.sparse_csr_tensor(A.crow_indices().to(torch.int32), A.col_indices().to(torch.int32), A.values(),
+                                         size=A.size(), device=device)
+
+    def spMM(self, X: torch.Tensor, b: torch.Tensor=None) -> torch.Tensor:
+        if b is None:
+            return torch.sparse.mm(self.A, X)
+        else:
+            return torch.addmm(b, self.A, X)
+
+    def spMV(self, x: torch.Tensor, b: torch.Tensor=None) -> torch.Tensor:
+        if b is None:
+            return torch.mv(self.A, x)
+        else:
+            return torch.addmv(b, self.A, x)
+
+
+def to_sparse(A: torch.Tensor, device) -> SPM:
+    device = torch.device(device)
+    if device.type == "cuda":
+        return SPMCuda(A, device)
+    else:
+        return SPMGeneral(A, device)
 
 
 def to_csr(A: torch.Tensor, device):

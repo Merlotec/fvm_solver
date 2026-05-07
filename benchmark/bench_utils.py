@@ -3,7 +3,7 @@
 import time
 import torch
 
-from benchmark.ell_kernel import ell_spmm, csr_to_ell
+from time_fvm.utils.ell_kernel import ell_spmm, ell_spmv
 
 
 def torch_csr(A, x, iters):
@@ -14,9 +14,8 @@ def torch_csr(A, x, iters):
     return y
 
 
-def triton_fn(A, x, iters, K: int = 5):
+def triton_fn(A, x, iters):
     """Run iters iterations of Triton ELL-packed SpMM."""
-    # vals, cols = csr_to_ell(A, K=K)
     vals, cols = A
 
     for _ in range(iters):
@@ -26,7 +25,7 @@ def triton_fn(A, x, iters, K: int = 5):
 
 @torch.inference_mode()
 def benchmark_pytorch_spmm(
-    A, spmm_fn, shape,
+    A, spmm_fn, shape, bs,
     iters=1000,
     warmup=10,
     dtype=torch.float32, device="cuda"
@@ -35,7 +34,7 @@ def benchmark_pytorch_spmm(
     torch.manual_seed(0)
 
     m, n = shape
-    x = torch.randn((n, 4), device=device, dtype=dtype)
+    x = torch.randn((n, bs), device=device, dtype=dtype)
 
     # Warmup
     spmm_fn(A, x, warmup)

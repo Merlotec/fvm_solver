@@ -2,7 +2,7 @@ from typing import TYPE_CHECKING
 import torch
 
 from time_fvm.config_fvm import ConfigFVM, ConfigBC, BCMode
-from time_fvm.utils.sparse import to_csr
+from time_fvm.utils.sparse import to_csr, to_sparse, SPM
 
 if TYPE_CHECKING:
     from torch import Tensor
@@ -20,8 +20,9 @@ class BoundarySetter:
     where_neum: tuple[torch.Tensor]      # shape = [2][n_neum_edges, 2]
 
     # Matrices for general face values
-    A_bc: torch.Tensor
+    A_bc: SPM
     b_bc: torch.Tensor
+    A_corr: SPM                 # Non orthogonal correction matrix
 
     # Merged BC groups, one per unique BCMode
     bc_groups: dict  # {BCMode: (BC, cell_indices: Tensor)}
@@ -92,7 +93,8 @@ class BoundarySetter:
             self._finalize_bc_groups()
 
         # Boundary face values
-        U_face_flat = torch.addmv(self.b_bc, self.A_bc, Us.flatten())      # shape = [n_edges_bc * n_comp]
+        # U_face_flat = torch.addmv(self.b_bc, self.A_bc, Us.flatten())      # shape = [n_edges_bc * n_comp]
+        U_face_flat = self.A_bc.spMV(Us.flatten(), self.b_bc)      # shape = [n_edges_bc * n_comp]
 
         # Non-orthogonal correction for boundary values, if gradients exist.
         if cell_grads is not None:
@@ -120,12 +122,16 @@ class BoundarySetter:
         U_f = U_0 + d * dUdn + (r-d) grad(U)
         """
         # dU = torch.mv(self.A_corr, cell_grads.reshape(-1))
-        # U_face.reshape(-1).add_(dU)
+        # U_face_flat.add_(dU)
 
-        U_face_flat.addmv_(
-            self.A_corr,
-            cell_grads.view(-1),
-        )
+        # U_face_flat.addmv_(
+        #     self.A_corr,
+        #     cell_grads.view(-1),
+        # )
+
+        dU = self.A_corr.spMV(cell_grads.view(-1))
+        U_face_flat.add_(dU)
+
 
     def add_bc(self, cfg: ConfigFVM, bc_cfg: ConfigBC, bc_mask, cell_indices, bc_normals):
         """Register a boundary-condition specification to be merged by mode later."""
@@ -216,7 +222,8 @@ class BoundarySetter:
             device=device,
         ).coalesce()
 
-        A = to_csr(A, device=device)
+        # A = to_csr(A, device=device)
+        A = to_sparse(A, device=device)
         return A
 
     def _build_spm_face_vals(self, E_props: FacetFlux):
@@ -251,7 +258,8 @@ class BoundarySetter:
 
         size_A = (N, n_cells * n_comp)
         A_bc = torch.sparse_coo_tensor(torch.stack([A_rows, A_cols], dim=0), A_vals, size=size_A)# .coalesce().to_sparse_csr()
-        A_bc = to_csr(A_bc, device=device)
+        # A_bc = to_csr(A_bc, device=device)
+        A_bc = to_sparse(A_bc, device=device)
         # Build the offset vector b.
         b_bc = torch.empty(N, device=device, dtype=torch.float32)
         # For Dirichlet entries, the prescribed value should override any extracted value.
@@ -326,14 +334,15 @@ class BC:
             v_t_inf_list.append(torch.full((n,), bc_cfg.v_t_inf, device=self.device))
 
             if mode == BCMode.Characteristic:
-                p_inf_list.append(phy_setup.eos_P(rho_inf, T_inf))
+                _, p_inf = phy_setup.eos_cP(rho_inf, T_inf)
+                p_inf_list.append(p_inf)
             elif mode == BCMode.Farfield:
-                a_inf = phy_setup.eos_c(rho_inf, T_inf)
+                a_inf, p_inf = phy_setup.eos_cP(rho_inf, T_inf)
                 v_n = torch.full((n,), bc_cfg.v_n_inf, device=self.device)
                 # R_m_far = (-v_n_inf) - 2a/(γ-1), R_p_far = (-v_n_inf) + 2a/(γ-1)
                 R_m_list.append(-v_n - 2 * a_inf / (self.gamma - 1))
                 R_p_list.append(-v_n + 2 * a_inf / (self.gamma - 1))
-                S_list.append(phy_setup.eos_P(rho_inf, T_inf) / (rho_inf ** self.gamma))
+                S_list.append(p_inf / (rho_inf ** self.gamma))
 
         self.bc_normals = _cat_reorder(normals_list)
         self.bc_tangents = _cat_reorder(tangents_list)
@@ -424,8 +433,9 @@ class BC:
 
         v_n_int, v_t_int = self._split_Vs(Vs)
 
-        p_int = self.phy_setup.eos_P(rho_int, T_int)
-        c_int = self.phy_setup.eos_c(rho_int, T_int)
+        # p_int = self.phy_setup.eos_P(rho_int, T_int)
+        # c_int = self.phy_setup.eos_c(rho_int, T_int)
+        c_int, p_int = self.phy_setup.eos_cP(rho_int, T_int)
 
         # 2) Exterior - broadcasted vectors
         drho = self.rho_inf - rho_int
@@ -553,6 +563,7 @@ class BC:
         V_n, V_t = self._split_Vs(V_int)
 
         # Interior invariants:
+        # a_int = self.phy_setup.eos_c(rho_int, T_int)
         a_int = self.phy_setup.eos_c(rho_int, T_int)
         R_m_int = V_n - 2 * a_int / gm1                     # 1
         S_int = self.R * T_int * rho_int ** (-gm1)          # 2

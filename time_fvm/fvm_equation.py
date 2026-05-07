@@ -91,6 +91,7 @@ class PhysicalSetup:
 
         self.P_face = self.eos_P(rho_faces, T_faces)
         self.c = self.eos_c(rho_faces, T_faces)     # shape = [n_edges, edges=2, n_comp=1]
+        # self.c, self.P_face = self.eos_cP(rho_faces, T_faces)
 
     # General gas parameters.
     def eos_c(self, rho, T):
@@ -100,6 +101,12 @@ class PhysicalSetup:
     def eos_P(self, rho, T):
         """ Pressure EOS """
         return self.R * rho * T
+
+    def eos_cP(self, rho, T):
+        """ From rho and T, get c and P. Combine eos_c and eos_P """
+        c = torch.sqrt(self.gamma * self.R * T)
+        P = self.R * rho * T
+        return c, P
 
     def eos_T(self, rho, P):
         """ Inverse of eos_P """
@@ -357,8 +364,8 @@ class FVMEquation:
 
             du/dt = -div(flux) = -sum_i (sign_i * flux_i)
         """
-        # Matrix version
-        divergence = torch.mm(self.flux_mat, fluxes)  # shape: (n_cells * n_component,)
+        # divergence = torch.mm(self.flux_mat, fluxes)  # shape: (n_cells * n_component,)
+        divergence = self.flux_mat.spMM(fluxes)  # shape: (n_cells * n_component,)
         return divergence
 
     def plot_flux(self, fluxes, title="Fluxes", show_index=False, lims=None, Xlims=None):

@@ -3,7 +3,7 @@ from cprint import c_print
 import torch
 
 from time_fvm.mesh_utils.mesh_store import Facet
-from time_fvm.utils.sparse import to_csr, combine_facet_operators, lift_sparse_matrix, interleave_sparse_rows
+from time_fvm.utils.sparse import to_csr, combine_facet_operators, lift_sparse_matrix, interleave_sparse_rows, to_sparse, SPM
 from time_fvm.fvm_stepping.facet_boundary import BoundarySetter
 from time_fvm.fvm_stepping.limiter import SlopeLimiter
 if TYPE_CHECKING:
@@ -46,10 +46,11 @@ class MeshCache:
     facet_dists_bc: torch.Tensor    # (n_facets_bc, n_comp)
 
     # Calculations
-    G_mats: torch.Tensor            # sparse CSR (2*n_cells, n_cells + n_facets_bc)
+    G_mats: SPM            # sparse SPM (2*n_cells, n_cells + n_facets_bc)
     neigh_combine: torch.Tensor     # (n_cells, 2)
-    A_face_grad: torch.Tensor       # sparse CSR (n_facets*n_comp, n_cells*n_comp)
+    A_face_grad: SPM       # sparse SPM (n_facets*n_comp, n_cells*n_comp)
     b_face_grad: torch.Tensor       # (n_facets*n_comp,)
+    flux_mat: SPM                   # (n_cells, n_facets)
 
     def __init__(self, mesh_setup: FVMMesh2D, n_comp: int, device: str):
         self.fvm_mesh = mesh_setup
@@ -70,7 +71,8 @@ class MeshCache:
         (cell_disps, facet_dists_bc, G_mats, neigh_combine) = mesh_setup.cell_grad_stuff
         self.facet_dists_bc = facet_dists_bc.to(device).unsqueeze(-1).expand(-1, n_comp)
         G_mats = interleave_sparse_rows(G_mats[0], G_mats[1]) # Want output to be easily reshaped.
-        self.G_mats = to_csr(G_mats, device)
+        # self.G_mats = to_csr(G_mats, device)
+        self.G_mats = to_sparse(G_mats, device)
         self.neigh_combine = neigh_combine.to(device)
 
         self.cell_disps = cell_disps.to(device)
@@ -101,7 +103,7 @@ class MeshCache:
     def clear_temp(self):
         """ Release device tensors that are no longer needed after initialisation. """
         del self.facet_dists_bc, self.cell_dist_proj, self.facet_to_cell_main, self.cell_disps
-        del self.bc_facet_mask
+        del self.bc_facet_mask, self.flux_mat
         torch.cuda.empty_cache()
         c_print(f'Deleted Mesh temp variables', color="magenta")
 
@@ -185,9 +187,11 @@ class MeshCache:
         # Handle Neumann entries:
         b_grad[neum_rows_all] = neumann_val[neum_comp]
 
-        self.A_face_grad, self.b_face_grad = combine_facet_operators(
+        A_face_grad, self.b_face_grad = combine_facet_operators(
             A_face_grad_main, A_grad_bc, b_grad, self.bc_facet_mask, self.n_facets, self.n_cells, n_comp, device
         )
+
+        self.A_face_grad = to_sparse(A_face_grad, device=device)
 
     def _build_flux_mat(self, dtype=torch.float32):
         """
@@ -214,7 +218,8 @@ class MeshCache:
 
         D_shape = [n_cell, self.n_facets]
         flux_mat = torch.sparse_coo_tensor(D_indices, D_values, size=D_shape, device="cpu", dtype=dtype).coalesce()
-        flux_mat = to_csr(flux_mat, self.device)
+        # flux_mat = to_csr(flux_mat, self.device)
+        flux_mat = to_sparse(flux_mat, device=self.device)
         return flux_mat
 
 
@@ -416,7 +421,8 @@ class FacetFlux:
             Us_cell_face.shape = (n_cells+n_facets_bc, N_component)
             Returns: Gradient matrix of shape (n_cells, 2, N_component)
         """
-        combined_grad = torch.mm(self.mesh.G_mats, Us_cell_face)  # combined_grad.shape == [n_cells*2, N_component]
+        # combined_grad = torch.mm(self.mesh.G_mats, Us_cell_face)  # combined_grad.shape == [n_cells*2, N_component]
+        combined_grad = self.mesh.G_mats.spMM(Us_cell_face)  # combined_grad.shape == [n_cells*2, N_component]
         cell_grads = combined_grad.view(self.n_cells, 2, self.n_comp)    # shape = [n_cells, 2, N_component]
         return cell_grads
 
@@ -446,8 +452,8 @@ class FacetFlux:
 
         # """ SPARSE"""
         mesh = self.mesh
-        dUdn_face_flat = torch.addmv(mesh.b_face_grad, mesh.A_face_grad, Us.flatten())
-
+        # dUdn_face_flat = torch.addmv(mesh.b_face_grad, mesh.A_face_grad, Us.flatten())
+        dUdn_face_flat = mesh.A_face_grad.spMV(Us.flatten(), mesh.b_face_grad)
         dUdn_face = dUdn_face_flat.view(self.n_facets, self.n_comp)
 
         return dUdn_face

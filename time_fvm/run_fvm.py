@@ -150,6 +150,7 @@ def main():
 
 
 if __name__ == "__main__":
+    # PYTHONPATH=/home/maccyz/Documents/FVM_solver:/home/maccyz/Documents/FVM_solver/tetgen:/home/maccyz/Documents/FVM_solver/tetgen/src
     print("Running fvm ")
     print()
     main()

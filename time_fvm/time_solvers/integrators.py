@@ -333,9 +333,9 @@ class ButcherAdapt(TSolver, Adaptive):
                 increment = 0
             else:
                 # Compute the increment for y using previous stages
-                increment = (self.A[i, :i] * self.k[:i]).sum(dim=0)
+                increment = torch.einsum("j...,j...->...", self.A[i, :i], self.k[:i]) #(self.A[i, :i] * self.k[:i]).sum(dim=0)
             # Evaluate the derivative at the stage time and state
-            k_i =  self.dt * self._forward_state(state_0 + increment)
+            k_i = self.dt * self._forward_state(state_0 + increment)
             self.k[i] = k_i
 
         # Combine stages to compute next state

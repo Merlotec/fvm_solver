@@ -1,16 +1,14 @@
-from __future__ import annotations
+from typing import TYPE_CHECKING
 from cprint import c_print
 import torch
 from abc import ABC, abstractmethod
 from matplotlib import pyplot as plt
 import time
 
-from typing import TYPE_CHECKING
 from time_fvm.ds_saving.saving import Saver
 if TYPE_CHECKING:
     from time_fvm.fvm_equation import FVMEquation, PhysicalSetup
     from time_fvm.config_fvm import ConfigFVM
-
 
 
 class FVMCells:
@@ -28,7 +26,7 @@ class FVMCells:
 
     def update_cells(self, state_new):
         """ Update cell values """
-        self.state =  state_new
+        self.state = state_new
 
     def get_values(self):
         return self.phys_setup.state_to_primative(self.state)
