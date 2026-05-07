@@ -4,7 +4,7 @@ import os
 import torch
 from cprint import c_print
 
-from time_fvm.sparse_utils import plot_interp_cell
+from time_fvm.utils.plotting import plot_interp_cell
 from time_fvm.fvm_stepping.facet_process import FacetFlux
 from base_cfg import ARTEFACT_DIR
 

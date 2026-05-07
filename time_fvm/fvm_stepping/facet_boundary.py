@@ -2,7 +2,8 @@ from typing import TYPE_CHECKING
 import torch
 
 from time_fvm.config_fvm import ConfigFVM, ConfigBC, BCMode
-from time_fvm.sparse_utils import to_csr
+from time_fvm.utils.sparse import to_csr
+
 if TYPE_CHECKING:
     from torch import Tensor
     from time_fvm.fvm_stepping.facet_process import FacetFlux

@@ -2,7 +2,7 @@ import torch
 from abc import ABC
 from cprint import c_print
 
-from time_fvm.sparse_utils import plot_points, plot_edges, plot_interp_cell
+from time_fvm.utils.plotting import plot_points, plot_interp_cell, plot_edges
 from time_fvm.mesh_utils.fvm_mesh import FVMMesh2D
 from time_fvm.fvm_stepping.facet_process import FacetFlux
 from time_fvm.time_solvers.t_solvers import FVMCells

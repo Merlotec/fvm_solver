@@ -94,8 +94,8 @@ class ConfigEllipse(ConfigFVM):
     n_iter: int = 50000     # Max number of iterations
 
     # mesh parameters
-    min_A: float = 0.1e-3
-    max_A: float = 0.1e-3
+    min_A: float = 0.02e-3
+    max_A: float = 0.02e-3
     lnscale: float = 2
 
     # Save configuration
