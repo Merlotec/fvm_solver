@@ -106,8 +106,8 @@ class ConfigEllipse(ConfigFVM):
 
     # Physical parameters
     T_0: float = 100        # Reference temperature
-    viscosity: float = 1e-5     # At reference temp
-    visc_bulk: float = 1e-3
+    viscosity: float = 1e-6     # At reference temp
+    visc_bulk: float = 1e-4
     thermal_cond: float = 1e-6
     S_const: float = 110.4       # Sutherland's constant
     gamma: float = 1.2  # Ratio of specific heats

@@ -2,7 +2,7 @@ from typing import TYPE_CHECKING
 import torch
 
 from time_fvm.config_fvm import ConfigFVM, ConfigBC, BCMode
-from time_fvm.utils.sparse import to_csr, to_sparse, SPM
+from time_fvm.utils.sparse import to_sparse, SPM
 
 if TYPE_CHECKING:
     from torch import Tensor

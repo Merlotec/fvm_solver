@@ -70,15 +70,6 @@ def to_sparse(A: torch.Tensor, device) -> SPM:
         return SPMGeneral(A, device)
 
 
-def to_csr(A: torch.Tensor, device):
-    """ Convert a dense matrix to sparse CSR format """
-    if A.layout != torch.sparse_csr:
-        A = A.to_sparse_csr()
-
-    A = A.to(device)
-    return torch.sparse_csr_tensor(A.crow_indices().to(torch.int32), A.col_indices().to(torch.int32), A.values(), size=A.size(), device=device)
-
-
 def combine_facet_operators(A_main, A_bc, b_bc, bc_edge_mask, n_edges, n_cells, n_comp, device):
     """
     Combines a main-edge operator and a boundary-edge operator into a single global operator.

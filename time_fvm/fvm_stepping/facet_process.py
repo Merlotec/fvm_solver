@@ -3,7 +3,7 @@ from cprint import c_print
 import torch
 
 from time_fvm.mesh_utils.mesh_store import Facet
-from time_fvm.utils.sparse import to_csr, combine_facet_operators, lift_sparse_matrix, interleave_sparse_rows, to_sparse, SPM
+from time_fvm.utils.sparse import combine_facet_operators, lift_sparse_matrix, interleave_sparse_rows, to_sparse, SPM
 from time_fvm.fvm_stepping.facet_boundary import BoundarySetter
 from time_fvm.fvm_stepping.limiter import SlopeLimiter
 if TYPE_CHECKING:
