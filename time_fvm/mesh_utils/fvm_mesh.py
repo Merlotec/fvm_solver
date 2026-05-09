@@ -52,16 +52,11 @@ class FVMMesh:
     bc_facet_mask: torch.Tensor  # shape = (n_facet)
     cell_to_facet: torch.Tensor  # shape = (n_cells, n_facets_per_cell)
     cell_facet_signs: torch.Tensor  # shape = (n_cells, n_facets_per_cell)
-    facet_to_cell: dict[int, torch.Tensor]  # shape = {n_facet}[n_adjacent_cells]        # Mapping facet to cell indices. Ordered [antiparallel, parallel] to facet normal.
 
     # Only for interior facet
     normals_main: torch.Tensor  # shape = (n_facet_main, n_dims)
     cell_grad_stuff: tuple # Stuff needed to calculate gradient on a cell
     facet_to_cell_main: torch.Tensor # shape = (n_facet_main, 2)              # Mapping facet to cell indices for non-boundary facet
-
-    # Only for boundary facets
-    facet_to_cell_bc: torch.Tensor # shape = (n_facet_bc, 1)              # Mapping facet to cell indices for boundary facet
-    normals_bc: torch.Tensor  # shape = (n_facet_bc, n_dims)
 
     def _cell_facet_sign(self, centroids, midpoints, cell_to_facet, normals, facet_to_cell, cell_facet_idxs):
         """ Compute which cell is on the left and right of each facet.
@@ -107,6 +102,7 @@ class FVMMesh2D(FVMMesh):
     n_bc_facet: int
 
     # Used for FVM calculations
+    bc_facet_mask: torch.Tensor  # shape = (n_facet)
     areas: torch.Tensor  # shape = (n_cells)
     normals: torch.Tensor  # shape = (n_facet, 2)
     lengths: torch.Tensor  # shape = (n_facet)
@@ -115,7 +111,6 @@ class FVMMesh2D(FVMMesh):
 
     def __init__(self, vertices, cells, facets, bc_facet_mask, device="cuda"):
         super().__init__()
-
         self.vertices = vertices
         self.cells = cells
         self.facets = facets
@@ -130,89 +125,8 @@ class FVMMesh2D(FVMMesh):
         c_print(f'Computing mesh properties', color="bright_magenta")
         self._compute_facet_props(vertices, cells, facets)
 
-    def _grad_weighting(self, cell_to_facet, facet_to_cell_ord, centroids, midpoints, normals):
-        """ Use least squares formula to compute gradient weighting.
-            grad(u) = A^-1 * b
-            A = sum_i (d_i d_i^T)
-            b = sum_i d_i (u_i - u_c)
-        """
-
-        bound_facet_idxs = torch.nonzero(self.bc_facet_mask, as_tuple=False).flatten()
-        global_to_local = {int(global_idx): local_idx for local_idx, global_idx in enumerate(bound_facet_idxs)}
-
-        combined_neigh, neigh_cents, combined_bc = [], [], []
-        for cell_id, facets in enumerate(cell_to_facet):  # Must keep this order. Neighbor id: torch.cat([Us, Us_bc_facet])
-            # Get neighboring cells
-            neighbors, centers, is_bc = [], [], []
-            for e in facets:
-                e = e.item()
-                if len(facet_to_cell_ord[e]) == 2:
-                    """ Interior facet"""
-                    is_bc.append(False)
-                    cells = facet_to_cell_ord[e]
-                    neigh_cell = cells[cells != cell_id]
-                    centers.append(centroids[neigh_cell])  # [1, 2]
-                    neighbors.append(neigh_cell.item())
-                else:
-                    """ Boundary facet """
-                    is_bc.append(True)
-                    midpoint = midpoints[e].unsqueeze(0)
-                    centers.append(midpoint)
-                    glob_facet_idx = global_to_local[e]
-                    neighbors.append(glob_facet_idx + self.n_cells)
-
-            combined_neigh.append(torch.tensor(neighbors))
-            neigh_cents.append(torch.cat(centers))  # [3, 2]
-            combined_bc.append(torch.tensor(is_bc)) # [3]
-        combined_neigh = torch.stack(combined_neigh).int()
-        neigh_cents = torch.stack(neigh_cents)  # [n_cells, 3, 2]
-        combined_bc = torch.stack(combined_bc).bool()  # [n_cells, 3]
-
-        # --- Compute gradient vectors in batch ---
-        # For each cell, compute the displacement vectors d_i = (neighbor center - cell center)
-        center_expanded = centroids.unsqueeze(1)  # shape: [n_cells, 1, 2]
-        d = neigh_cents - center_expanded  # shape: [n_cells, 3, 2]
-        # Compute weights per neighbor: w_i = 1 / norm(d_i) ** k
-        w = 1 / torch.norm(d.double(), dim=2) ** 0.25 # shape: [n_cells, 3]
-        w[combined_bc] *= 7.5
-        w2 = w ** 2  # shape: [n_cells, 3]
-        # Compute A = dᵀ @ diag(w²) @ d for each cell.
-        # dᵀ has shape [n_cells, 2, 3] and d * w2.unsqueeze(-1) scales each 2D neighbor vector.
-        dT = d.transpose(1, 2).double()  # shape: [n_cells, 2, 3]
-        A = torch.bmm(dT, d * w2.unsqueeze(-1))  # shape: [n_cells, 2, 2]
-        # Invert A for each cell.
-        A_inv = torch.inverse(A.double())  # shape: [n_cells, 2, 2]
-        # Finally, compute the gradient matrix as A_inv @ dᵀ @ diag(w²)
-        # Multiply dᵀ by w2 along the neighbor dimension:
-        A_inv_di_T = torch.bmm(A_inv, dT * w2.unsqueeze(1)).float()  # shape: [n_cells, 2, 3]
-
-        G_mats = []
-        for i in range(2):
-            G_mat = build_sparse_gradient_matrix(combined_neigh, A_inv_di_T, i, self.n_cells, self.n_bc_facet)
-            G_mats.append(G_mat)
-
-        # Get displacement between cells with facet indexing. In the direction of right to left
-        cell_disps, facet_dist_bc = [], []
-        for e, cells in facet_to_cell_ord.items():
-            if cells.shape[0] == 1:
-                # BC cell / facet: Distance from centroid to facet.
-                n_hat = normals[e] / torch.norm(normals[e], dim=-1, keepdim=True)
-                f = midpoints[e]
-                p = centroids[cells[0]]
-                disp = n_hat * torch.dot(f - p, n_hat)
-                sign = torch.sign(torch.dot(f - p, n_hat))
-                dist = torch.norm(disp) * sign
-                facet_dist_bc.append(dist)
-            else:
-                # Main cell / facet: Distance between centroids
-                d = centroids[cells[1]] - centroids[cells[0]]
-                cell_disps.append(d)
-        cell_disps = torch.stack(cell_disps)
-        facet_dist_bc = torch.stack(facet_dist_bc)
-
-        return cell_disps, facet_dist_bc, G_mats, combined_neigh
-
     def _compute_facet_props(self, vertices, cells, facets):
+        print("Compute facet normals and lengths")
         # Compute facet normals and lengths
         facet_vertex = vertices[facets]
         facet_vectors = facet_vertex[:, 1] - facet_vertex[:, 0]        # Ordering is used as facet index from here.
@@ -227,19 +141,12 @@ class FVMMesh2D(FVMMesh):
         self.areas = self._cell_area(cell_points)
         self.centroids = torch.mean(cell_points, dim=1)  # shape = [n_cells, 2]
 
-        # Compute mapping of facet to cells
-        cell_to_facet = self._get_cell_facets(cells, facets) # shape = [n_cells, 3]
+        # Compute mapping of facet_to_cells and cells_to_facet
+        cell_to_facet, _facet_to_cell, cell_facet_idxs = self._get_cell_facets(cells, facets) # shape = [n_cells, 3]
         self.cell_to_facet = cell_to_facet
-        unique_facets, _ = torch.unique(cell_to_facet, sorted=True, return_inverse=True)
-        _facet_to_cell, cell_facet_idxs = {}, {}
-        for facet in unique_facets:
-            pos = (facet == cell_to_facet).nonzero()
-            _facet_to_cell[facet.item()] = pos[:, 0]
-            cell_facet_idxs[facet.item()] = pos[:, 1]
 
         # Sort cell in order of facet signed direction. ORDER: [-, +], so cell on right comes first.
         self.cell_facet_signs, facet_to_cell, cent_to_facet_disp = self._cell_facet_sign(self.centroids, midpoints, cell_to_facet, self.normals, _facet_to_cell, cell_facet_idxs)
-        self.facet_to_cell = facet_to_cell
 
         # Split tensors into facet and main
         normals_main, facet_to_cell_main = [], []
@@ -258,10 +165,12 @@ class FVMMesh2D(FVMMesh):
         self.facet_to_cell_main = torch.stack(facet_to_cell_main)
         self.cent_to_facet_disp = cent_to_facet_disp
         self.facet_to_cell_bc = torch.stack(facet_to_cell_bc).squeeze()
-        self.normals_bc = torch.stack(normals_bc)
 
+        print(f'Compute grad weighting')
         # Compute grad weighting
         self.cell_grad_stuff = self._grad_weighting(cell_to_facet, facet_to_cell, self.centroids, midpoints, normals)
+
+        print("Done")
 
     def _cell_area(self, vertices):
         """ vertices.shape = (n_cells, 3, 2) """
@@ -278,7 +187,7 @@ class FVMMesh2D(FVMMesh):
 
     def _get_cell_facets(self, cells, facets):
         """
-            Compute which facets belong to each cell
+            Compute which facets belong to each cell, and vice versa
             cells.shape = (n_cells, 3)
             facets.shape = (n_facet, 2)
         """
@@ -317,7 +226,125 @@ class FVMMesh2D(FVMMesh):
             cell_to_facet.append(facet_indices)
 
         cell_to_facet = torch.tensor(cell_to_facet)
-        return cell_to_facet
+
+        # Compute facet to cell
+        """ Flattens the cell_to_facet tensor, computes the corresponding cell and local facet indices once, 
+        then sorts the flattened entries by facet ID so equal facets become contiguous. 
+        The grouped sorted arrays are then split by facet counts, giving all cells and local facet positions 
+        for each unique facet without repeatedly scanning the full tensor."""
+        unique_facets, inverse = torch.unique(cell_to_facet.reshape(-1), sorted=True, return_inverse=True, )
+
+        num_cells, facets_per_cell = self.n_cells, 3
+        flat_pos = torch.arange(cell_to_facet.numel(), device=cell_to_facet.device)
+
+        cell_ids = flat_pos // facets_per_cell
+        local_facet_ids = flat_pos % facets_per_cell
+
+        order = torch.argsort(inverse)
+
+        sorted_inverse = inverse[order]
+        sorted_cells = cell_ids[order]
+        sorted_local_facets = local_facet_ids[order]
+
+        counts = torch.bincount(sorted_inverse, minlength=len(unique_facets))
+
+        cell_groups = torch.split(sorted_cells, counts.tolist())
+        local_facet_groups = torch.split(sorted_local_facets, counts.tolist())
+
+        facet_to_cell = {
+            int(f.item()): cells
+            for f, cells in zip(unique_facets, cell_groups)
+        }
+
+        cell_facet_idxs = {
+            int(f.item()): idxs
+            for f, idxs in zip(unique_facets, local_facet_groups)
+        }
+
+        return cell_to_facet, facet_to_cell, cell_facet_idxs
+
+    def _grad_weighting(self, cell_to_facet, facet_to_cell_ord, centroids, midpoints, normals):
+        """ Use least squares formula to compute gradient weighting.
+            grad(u) = A^-1 * b
+            A = sum_i (d_i d_i^T)
+            b = sum_i d_i (u_i - u_c)
+        """
+        bound_facet_idxs = torch.nonzero(self.bc_facet_mask, as_tuple=False).flatten()
+        global_to_local = {int(global_idx): local_idx for local_idx, global_idx in enumerate(bound_facet_idxs)}
+
+        combined_neigh, neigh_cents, combined_bc = [], [], []
+        for cell_id, facets in enumerate(cell_to_facet):  # Must keep this order. Neighbor id: torch.cat([Us, Us_bc_facet])
+            # Get neighboring cells
+            neighbors, centers, is_bc = [], [], []
+            for e in facets:
+                e = e.item()
+                if len(facet_to_cell_ord[e]) == 2:
+                    """ Interior facet"""
+                    is_bc.append(False)
+                    cells = facet_to_cell_ord[e]
+                    neigh_cell = cells[cells != cell_id]
+                    centers.append(centroids[neigh_cell])  # [1, 2]
+                    neighbors.append(neigh_cell.item())
+                else:
+                    """ Boundary facet """
+                    is_bc.append(True)
+                    midpoint = midpoints[e].unsqueeze(0)
+                    centers.append(midpoint)
+                    glob_facet_idx = global_to_local[e]
+                    neighbors.append(glob_facet_idx + self.n_cells)
+
+            combined_neigh.append(torch.tensor(neighbors))
+            neigh_cents.append(torch.cat(centers))  # [3, 2]
+            combined_bc.append(torch.tensor(is_bc)) # [3]
+        combined_neigh = torch.stack(combined_neigh).int()
+        neigh_cents = torch.stack(neigh_cents)  # [n_cells, 3, 2]
+        combined_bc = torch.stack(combined_bc).bool()  # [n_cells, 3]
+
+        # --- Compute gradient vectors in batch ---
+        # For each cell, compute the displacement vectors d_i = (neighbor center - cell center)
+        center_expanded = centroids.unsqueeze(1)  # shape: [n_cells, 1, 2]
+        d = neigh_cents - center_expanded  # shape: [n_cells, 3, 2]
+        # Compute weights per neighbor: w_i = 1 / norm(d_i) ** k
+        w = 1 / torch.norm(d.double(), dim=2) ** 0.25 # shape: [n_cells, 3]
+        # Upweight boundary values
+        w[combined_bc] *= 7.5
+        w2 = w ** 2  # shape: [n_cells, 3]
+        # Compute A = dᵀ @ diag(w²) @ d for each cell.
+        # dᵀ has shape [n_cells, 2, 3] and d * w2.unsqueeze(-1) scales each 2D neighbor vector.
+        dT = d.transpose(1, 2).double()  # shape: [n_cells, 2, 3]
+        A = torch.bmm(dT, d * w2.unsqueeze(-1))  # shape: [n_cells, 2, 2]
+        # Invert A for each cell.
+        A_inv = torch.inverse(A.double())  # shape: [n_cells, 2, 2]
+        # Finally, compute the gradient matrix as A_inv @ dᵀ @ diag(w²)
+        # Multiply dᵀ by w2 along the neighbor dimension:
+        A_inv_di_T = torch.bmm(A_inv, dT * w2.unsqueeze(1)).float()  # shape: [n_cells, 2, 3]
+
+        # Build gradient matrix
+        G_mats = []
+        for i in range(2):
+            G_mat = build_sparse_gradient_matrix(combined_neigh, A_inv_di_T, i, self.n_cells, self.n_bc_facet)
+            G_mats.append(G_mat)
+
+        # Get displacement between cells with facet indexing. In the direction of right to left
+        cell_disps, facet_dist_bc = [], []
+        for e, cells in facet_to_cell_ord.items():
+            if cells.shape[0] == 1:
+                # BC cell / facet: Distance from centroid to facet.
+                n_hat = normals[e] / torch.norm(normals[e], dim=-1, keepdim=True)
+                f = midpoints[e]
+                p = centroids[cells[0]]
+                disp = n_hat * torch.dot(f - p, n_hat)
+                sign = torch.sign(torch.dot(f - p, n_hat))
+                dist = torch.norm(disp) * sign
+                facet_dist_bc.append(dist)
+            else:
+                # Main cell / facet: Distance between centroids
+                d = centroids[cells[1]] - centroids[cells[0]]
+                cell_disps.append(d)
+        cell_disps = torch.stack(cell_disps)
+        facet_dist_bc = torch.stack(facet_dist_bc)
+
+        return cell_disps, facet_dist_bc, G_mats, combined_neigh
 
 
 class FVMMesh3D(FVMMesh):
@@ -350,6 +377,49 @@ class FVMMesh3D(FVMMesh):
 
         c_print(f'Computing mesh properties', color="bright_magenta")
         self._compute_facet_props(vertices, cells, facets)
+
+    def _compute_facet_props(self, vertices, cells, facets):
+        # Compute facet normals and areas
+        facet_vertex = vertices[facets]  # shape: [n_facet, 3, 3]
+        self.facet_vertex = facet_vertex
+        normals, facet_areas = self._facet_normal(facet_vertex)
+        self.normals = normals  # shape = [n_facet, 3]
+        self.facet_areas = facet_areas  # shape = [n_facet]
+        midpoints = torch.mean(facet_vertex, dim=1)  # shape = [n_facet, 3]
+        self.midpoints = midpoints
+
+        # Cell volume and centroid
+        cell_points = vertices[cells]  # shape: [n_cells, 4, 3]
+        self.volumes = self._cell_volume(cell_points)
+        self.centroids = torch.mean(cell_points, dim=1)  # shape = [n_cells, 3]
+
+        # Compute mapping of facet to cells
+        cell_to_facet, _facet_to_cell, cell_facet_idxs = self._get_cell_facets(cells, facets)  # shape = [n_cells, 4]
+        self.cell_to_facet = cell_to_facet
+
+        # Sort cell in order of facet signed direction. ORDER: [-, +], so cell on right comes first.
+        self.cell_facet_signs, facet_to_cell, cent_to_facet_disp = self._cell_facet_sign(
+            self.centroids, midpoints, cell_to_facet, self.normals, _facet_to_cell, cell_facet_idxs
+        )
+
+        # Split tensors into interior and boundary facets
+        normals_main, facet_to_cell_main = [], []
+        facet_to_cell_bc, normals_bc = [], []
+        for e_idx, e_bc in enumerate(self.bc_facet_mask):
+            if e_bc:
+                facet_to_cell_bc.append(facet_to_cell[e_idx])
+                normals_bc.append(normals[e_idx])
+            else:
+                normals_main.append(normals[e_idx])
+                facet_to_cell_main.append(facet_to_cell[e_idx])
+
+        self.normals_main = torch.stack(normals_main)
+        self.facet_to_cell_main = torch.stack(facet_to_cell_main)
+        self.cent_to_facet_disp = cent_to_facet_disp
+        self.facet_to_cell_bc = torch.stack(facet_to_cell_bc).squeeze()
+
+        # Compute grad weighting
+        self.cell_grad_stuff = self._grad_weighting(cell_to_facet, facet_to_cell, self.centroids, midpoints, normals)
 
     def _facet_normal(self, facet_vertex):
         """ Compute outward-facing normals for triangular facets.
@@ -416,7 +486,38 @@ class FVMMesh3D(FVMMesh):
             cell_to_facet.append(facet_indices)
 
         cell_to_facet = torch.tensor(cell_to_facet)
-        return cell_to_facet
+
+        # Compute facet to cell
+        unique_facets, inverse = torch.unique(cell_to_facet.reshape(-1), sorted=True, return_inverse=True)
+
+        num_cells, facets_per_cell = self.n_cells, 4
+        flat_pos = torch.arange(cell_to_facet.numel(), device=cell_to_facet.device)
+
+        cell_ids = flat_pos // facets_per_cell
+        local_facet_ids = flat_pos % facets_per_cell
+
+        order = torch.argsort(inverse)
+
+        sorted_inverse = inverse[order]
+        sorted_cells = cell_ids[order]
+        sorted_local_facets = local_facet_ids[order]
+
+        counts = torch.bincount(sorted_inverse, minlength=len(unique_facets))
+
+        cell_groups = torch.split(sorted_cells, counts.tolist())
+        local_facet_groups = torch.split(sorted_local_facets, counts.tolist())
+
+        facet_to_cell = {
+            int(f.item()): cells
+            for f, cells in zip(unique_facets, cell_groups)
+        }
+
+        cell_facet_idxs = {
+            int(f.item()): idxs
+            for f, idxs in zip(unique_facets, local_facet_groups)
+        }
+
+        return cell_to_facet, facet_to_cell, cell_facet_idxs
 
     def _grad_weighting(self, cell_to_facet, facet_to_cell_ord, centroids, midpoints, normals):
         """ Use least squares formula to compute gradient weighting (3D).
@@ -496,56 +597,6 @@ class FVMMesh3D(FVMMesh):
 
         return cell_disps, facet_dist_bc, G_mats, combined_neigh
 
-    def _compute_facet_props(self, vertices, cells, facets):
-        # Compute facet normals and areas
-        facet_vertex = vertices[facets]  # shape: [n_facet, 3, 3]
-        self.facet_vertex = facet_vertex
-        normals, facet_areas = self._facet_normal(facet_vertex)
-        self.normals = normals  # shape = [n_facet, 3]
-        self.facet_areas = facet_areas  # shape = [n_facet]
-        midpoints = torch.mean(facet_vertex, dim=1)  # shape = [n_facet, 3]
-        self.midpoints = midpoints
-
-        # Cell volume and centroid
-        cell_points = vertices[cells]  # shape: [n_cells, 4, 3]
-        self.volumes = self._cell_volume(cell_points)
-        self.centroids = torch.mean(cell_points, dim=1)  # shape = [n_cells, 3]
-
-        # Compute mapping of facet to cells
-        cell_to_facet = self._get_cell_facets(cells, facets)  # shape = [n_cells, 4]
-        self.cell_to_facet = cell_to_facet
-        unique_facets, _ = torch.unique(cell_to_facet, sorted=True, return_inverse=True)
-        _facet_to_cell, cell_facet_idxs = {}, {}
-        for facet in unique_facets:
-            pos = (facet == cell_to_facet).nonzero()
-            _facet_to_cell[facet.item()] = pos[:, 0]
-            cell_facet_idxs[facet.item()] = pos[:, 1]
-
-        # Sort cell in order of facet signed direction. ORDER: [-, +], so cell on right comes first.
-        self.cell_facet_signs, facet_to_cell, cent_to_facet_disp = self._cell_facet_sign(
-            self.centroids, midpoints, cell_to_facet, self.normals, _facet_to_cell, cell_facet_idxs
-        )
-        self.facet_to_cell = facet_to_cell
-
-        # Split tensors into interior and boundary facets
-        normals_main, facet_to_cell_main = [], []
-        facet_to_cell_bc, normals_bc = [], []
-        for e_idx, e_bc in enumerate(self.bc_facet_mask):
-            if e_bc:
-                facet_to_cell_bc.append(facet_to_cell[e_idx])
-                normals_bc.append(normals[e_idx])
-            else:
-                normals_main.append(normals[e_idx])
-                facet_to_cell_main.append(facet_to_cell[e_idx])
-
-        self.normals_main = torch.stack(normals_main)
-        self.facet_to_cell_main = torch.stack(facet_to_cell_main)
-        self.cent_to_facet_disp = cent_to_facet_disp
-        self.facet_to_cell_bc = torch.stack(facet_to_cell_bc).squeeze()
-        self.normals_bc = torch.stack(normals_bc)
-
-        # Compute grad weighting
-        self.cell_grad_stuff = self._grad_weighting(cell_to_facet, facet_to_cell, self.centroids, midpoints, normals)
 
     # _cell_facet_sign is inherited from the base FVMMesh class and is dimension-agnostic.
     # It works unchanged for 3D since it only depends on normals and centroids having matching last dims.
