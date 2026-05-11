@@ -285,6 +285,10 @@ class FacetFlux:
         self.grad_comps = list(range(self.dim)) + [self.dim+1]
 
         c_print('Complete init FVMEdgeInfo', color="magenta")
+        self.facet_ids = torch.cat([
+            mesh.cell_to_facet.reshape(-1),
+            mesh.bc_locations.reshape(-1),
+        ], dim=0)
 
     def clear_temp(self):
         self.mesh.clear_temp()
@@ -334,46 +338,45 @@ class FacetFlux:
         mesh = self.mesh
 
         U_facet_bc = self.boundary_setter.set_face_values(Us, self.cell_grads)      # shape = [n_facets_bc, n_comp]
-        Us_cell_facet = torch.cat([Us, U_facet_bc])        # shape = [n_cells + n_facets_bc, n_comp]
-        cell_grads = self._cell_grads(Us_cell_facet) # shape = [n_cells, 2, n_comp]
+        Us_cell_facet = torch.cat([Us, U_facet_bc])         # shape = [n_cells + n_facets_bc, n_comp]
+        cell_grads = self._cell_grads(Us_cell_facet)        # shape = [n_cells, 2, n_comp]
 
-        # Compute limited face values,
+        # Compute limited face values
         Us_face, phi_lim = self._limit_face_vals(Us, Us_cell_facet, cell_grads)   # Us_face.shape = [n_cells, 3, n_comp], phi_lim.shape =  [n_cells, 1, n_comp]
         Us_face = Us_face.view(self.n_local * self.n_cells, self.n_comp)
         cell_grads = cell_grads * phi_lim
         self.cell_grads = cell_grads    # Save for boundary conditions
 
-        # Face and cell gradients of velocity and temperature
-        grad_F = cell_grads[:, :, self.grad_comps].reshape(self.n_cells, 6)      # shape = [n_cells, {dx, dy} * {vx, vy, T}]
-        # grad_F_flat = torch.repeat_interleave(grad_F, 3, dim=0, output_size=3*self.n_cells) # [dvx/dx, dvy/dx, dvx/dy, dvy/dy, dT/dx, dT/dy]
-        grad_F_flat = grad_F[:, None, :].expand(-1, 3, -1).reshape(-1, 6) # [dvx/dx, dvy/dx, dvx/dy, dvy/dy, dT/dx, dT/dy]
-        grad_F_bc = grad_F[mesh.facet_to_cell_bc]
-
-        # Prepare projection from cell to facets - (slow step so vectorize over all components)
-        cell_values = torch.cat([Us_face, grad_F_flat], dim=-1)                 # shape = [3*n_cells, n_comp+6]
-        cell_values_bc = torch.cat([U_facet_bc, grad_F_bc], dim=1)              # shape = [n_facets_bc, n_comp+6]
-
         # Project to left and right face values
-        U_face_all = torch.empty((self.n_facets, 2, self.n_comp + 6), device=self.device)  # shape = [n_facets, 2, n_comp+6]
-        U_face_all[mesh.cell_to_facet, mesh.cell_facet_signs] = cell_values
-        U_face_all[mesh.bc_locations, mesh.bc_facet_side] = cell_values_bc
+        U_face_all = torch.empty((self.n_facets, 2, self.n_comp), device=self.device)  # shape = [n_facets, 2, n_comp+6]
+        U_face_all[mesh.cell_to_facet, mesh.cell_facet_signs] = Us_face
+        U_face_all[mesh.bc_locations, mesh.bc_facet_side] = U_facet_bc
 
         # Decompose components back
         self.Vs_facet = U_face_all[:, :, :self.dim].contiguous()                   # shape = [n_facets, facets=2, n_comp=2]
         self.rho_facet = U_face_all[:, :, self.dim].unsqueeze(-1).contiguous()     # shape = [n_facets, facets=2, dims=1]
         self.T_facet = U_face_all[:, :, self.dim+1].unsqueeze(-1).contiguous()     # shape = [n_facets, facets=2, dims=1]
-
         # Conserved quantities
         self.mom_facet, _, self.Q_facet = self.phy_setup.primatives_to_state(self.Vs_facet, self.rho_facet, self.T_facet)
         self.phi = (self.Vs_facet * mesh.normals.unsqueeze(1)).sum(dim=-1) # shape = [n_facets, facets=2, ]
 
-        # Compute gradient on facet and select wanted components
+        # Compute face and cell gradients of velocity and temperature
+        grad_F = cell_grads[:, :, self.grad_comps].reshape(self.n_cells, 6)      # shape = [n_cells, {dx, dy} * {vx, vy, T}]
+        grad_F_flat = torch.repeat_interleave(grad_F, 3, dim=0, output_size=3*self.n_cells) # [dvx/dx, dvy/dx, dvx/dy, dvy/dy, dT/dx, dT/dy]
+        grad_F_bc = grad_F[mesh.facet_to_cell_bc]
+        # Project cell gradients to left and right face values
+        grad_facet_all = torch.empty((self.n_facets, 2, 6), device=self.device)
+        grad_facet_all[mesh.cell_to_facet, mesh.cell_facet_signs] = grad_F_flat
+        grad_facet_all[mesh.bc_locations, mesh.bc_facet_side] = grad_F_bc
+        # Average gradient over both sides of facet
+        grad_F_lstsq = grad_facet_all.mean(dim=1)
+        grad_F_lstsq = grad_F_lstsq.reshape(self.n_facets, self.dim, self.dim+1)   # shape = [n_facets, {x, y}, {vx, vy, T}]
+
+        # Get face gradients using direct cell to face gradient operator.
         grad_faces_n = self._face_grads(Us)                             # shape = [n_faces, n_comp]
         grad_F_dn = grad_faces_n[:, self.grad_comps]                    # shape = [n_faces, 3]
 
         # Non-orthogonal correction for facet gradient: n . grad(U)_f = C du + (n - C d) . grad(U)_f
-        # Get relevant interpolated gradient. Average over both sides of facet.
-        grad_F_lstsq = U_face_all[:, :, 4:10].mean(dim=1).reshape(self.n_facets, self.dim, self.dim+1)   # shape = [n_facets, {x, y}, {vx, vy, T}]
         # Remove parallel part of gradient
         dFdn_correct = grad_F_dn - (grad_F_lstsq * mesh.X_orthog).sum(dim=1)      # shape = [n_facets, 3]
         # Replace normal part of gradient with facet gradient
