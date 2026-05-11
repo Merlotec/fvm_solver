@@ -15,9 +15,7 @@ class Saver:
             self.save_dir = f'{ARTEFACT_DIR}/fvm_saves/{timestamp}'
         else:
             self.save_dir = save_dir
-
         c_print(f'Saving results to {self.save_dir}', color="bright_cyan")
-        os.makedirs(self.save_dir, exist_ok=True)
 
         # Save mesh properties
         mesh = E_props.mesh
@@ -36,10 +34,20 @@ class Saver:
         mesh_props = {"triangles": triangles, "vertices": vertices, "centroids": centroids, "edges": edges,
                       "bc_midpoints": bc_midpoints, "bc_normals": bc_normals,
                       "bc_edge_masK": bc_edge_mask, "bc_type_str": bc_type_str}
-        np.savez_compressed(f'{self.save_dir}/mesh_props.npz', **mesh_props)
+        self.mesh_props = mesh_props
+        self.saved_mesh_props = False
+
+    def save_initial(self):
+        """ Delay saving mesh until acual data has been generated. """
+        os.makedirs(self.save_dir, exist_ok=True)
+        np.savez_compressed(f'{self.save_dir}/mesh_props.npz', **self.mesh_props)
         c_print(f"Saved mesh properties to '{self.save_dir}/mesh_props.npz'", color="green")
 
     def save(self, t, E_props: FacetFlux, primatives):
+        if not self.saved_mesh_props:
+            self.save_initial()
+            self.saved_mesh_props = True
+
         bc_facet_mask = E_props.mesh.fvm_mesh.bc_facet_mask
         # Save centroid values
         primatives = primatives  # shape = [n_cells, comp=4]

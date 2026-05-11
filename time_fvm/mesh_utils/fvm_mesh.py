@@ -8,7 +8,7 @@ def build_sparse_gradient_matrix(combined_neigh, G_mat, dim, n_cells, n_boundari
 
     Args:
         combined_neigh Tensor: For each cell i, a 1D tensor of neighbor cell indices.
-        G_mat (Tensor): For each cell i, a 2D tensor of shape [n_dims, num_total_neighbors_i].
+        G_mat (Tensor): For each cell i, a 2D tensor of shape [dim, num_total_neighbors_i].
                               The first columns correspond to cell neighbors and the remaining columns to facets.
         dim (int): The spatial dimension (0 for x, 1 for y) to build the gradient matrix.
         n_cells (int): Total number of cells.
@@ -43,20 +43,33 @@ def build_sparse_gradient_matrix(combined_neigh, G_mat, dim, n_cells, n_boundari
 
 
 class FVMMesh:
+    dim: int
+    n_cells: int
+    n_facets: int
+    n_bc_facet: int
+
     # Local only for saving / plotting
     facets: torch.Tensor  # shape = (n_facet, n_nodes_per_facet)
-    vertices: torch.Tensor  # shape = (n_vertices, n_dims)
+    vertices: torch.Tensor  # shape = (n_vertices, dim)
     cells: torch.Tensor  # shape = (n_cells, n_nodes_per_cell)
 
     # Used for FVM calculations
-    bc_facet_mask: torch.Tensor  # shape = (n_facet)
+    normals: torch.Tensor  # shape = (n_facet_main, dim)
+    centroids: torch.Tensor         # shape = (n_cells, dim)
+    midpoints: torch.Tensor         # shape = (n_facet, dim)
+    volumes: torch.Tensor           # shape = (n_cells)
+
     cell_to_facet: torch.Tensor  # shape = (n_cells, n_facets_per_cell)
     cell_facet_signs: torch.Tensor  # shape = (n_cells, n_facets_per_cell)
 
     # Only for interior facet
-    normals_main: torch.Tensor  # shape = (n_facet_main, n_dims)
     cell_grad_stuff: tuple # Stuff needed to calculate gradient on a cell
     facet_to_cell_main: torch.Tensor # shape = (n_facet_main, 2)              # Mapping facet to cell indices for non-boundary facet
+    cent_to_facet_disp: torch.Tensor    # shape = (n_cells, n_facets_per_cell, dim)
+
+    # Boundary
+    bc_facet_mask: torch.Tensor  # shape = (n_facet)
+    facet_to_cell_bc: torch.Tensor  # shape = (n_facet_bc)
 
     def _cell_facet_sign(self, centroids, midpoints, cell_to_facet, normals, facet_to_cell, cell_facet_idxs):
         """ Compute which cell is on the left and right of each facet.
@@ -64,18 +77,18 @@ class FVMMesh:
             Signs: 1 if on left, -1 if on right.
             Works in any dimension (2D or 3D).
         """
-        midpoints_cell = midpoints[cell_to_facet]  # shape: [n_cells, n_facets_per_cell, n_dims]
-        normals_cell = normals[cell_to_facet]  # shape: [n_cells, n_facets_per_cell, n_dims]
+        midpoints_cell = midpoints[cell_to_facet]  # shape: [n_cells, n_facets_per_cell, dim]
+        normals_cell = normals[cell_to_facet]  # shape: [n_cells, n_facets_per_cell, dim]
         # Compute the difference between each facet midpoint and the centroid.
-        p_diff = midpoints_cell - centroids.unsqueeze(1)  # shape: [n_cells, n_facets_per_cell, n_dims]
+        p_diff = midpoints_cell - centroids.unsqueeze(1)  # shape: [n_cells, n_facets_per_cell, dim]
         # Normalize the normals along the last dimension.
         norms = torch.norm(normals_cell, dim=-1, keepdim=True)  # shape: [n_cells, n_facets_per_cell, 1]
-        norm_hat = normals_cell / norms  # shape: [n_cells, n_facets_per_cell, n_dims]
+        norm_hat = normals_cell / norms  # shape: [n_cells, n_facets_per_cell, dim]
         # Compute the dot product and then its sign.
         dist_dot = torch.sum(norm_hat * p_diff, dim=-1)  # shape: [n_cells, n_facets_per_cell]
         signs = torch.sign(dist_dot).long()  # shape: [n_cells, n_facets_per_cell]
         # The displacement vectors are simply p_diff.
-        cent_to_facet_disp = p_diff  # shape: [n_cells, n_facets_per_cell, n_dims]
+        cent_to_facet_disp = p_diff  # shape: [n_cells, n_facets_per_cell, dim]
 
         facet_to_cell_ordered = {}
         p_m, m_p = torch.tensor([1, -1]), torch.tensor([-1, 1])
@@ -97,17 +110,7 @@ class FVMMesh:
 
 
 class FVMMesh2D(FVMMesh):
-    n_cells: int
-    n_facets: int
-    n_bc_facet: int
-
-    # Used for FVM calculations
-    bc_facet_mask: torch.Tensor  # shape = (n_facet)
-    areas: torch.Tensor  # shape = (n_cells)
-    normals: torch.Tensor  # shape = (n_facet, 2)
-    lengths: torch.Tensor  # shape = (n_facet)
-    centroids: torch.Tensor  # shape = (n_cells, 2)
-    midpoints: torch.Tensor  # shape = (n_facet, 2)
+    dim = 2
 
     def __init__(self, vertices, cells, facets, bc_facet_mask, device="cuda"):
         super().__init__()
@@ -137,7 +140,7 @@ class FVMMesh2D(FVMMesh):
 
         # Cell area and centroid
         cell_points = vertices[cells]
-        self.areas = self._cell_area(cell_points)
+        self.volumes = self._cell_area(cell_points)     # shape = [n_cells]. Technically areas. use volume for generality.
         self.centroids = torch.mean(cell_points, dim=1)  # shape = [n_cells, 2]
 
         # Compute mapping of facet_to_cells and cells_to_facet
@@ -145,7 +148,7 @@ class FVMMesh2D(FVMMesh):
         self.cell_to_facet = cell_to_facet
 
         # Sort cell in order of facet signed direction. ORDER: [-, +], so cell on right comes first.
-        self.cell_facet_signs, facet_to_cell, cent_to_facet_disp = self._cell_facet_sign(self.centroids, midpoints, cell_to_facet, self.normals, _facet_to_cell, cell_facet_idxs)
+        self.cell_facet_signs, facet_to_cell, self.cent_to_facet_disp = self._cell_facet_sign(self.centroids, midpoints, cell_to_facet, self.normals, _facet_to_cell, cell_facet_idxs)
 
         # Split tensors into facet and main
         normals_main, facet_to_cell_main = [], []
@@ -162,9 +165,7 @@ class FVMMesh2D(FVMMesh):
 
         self.normals_main = torch.stack(normals_main)
         self.facet_to_cell_main = torch.stack(facet_to_cell_main)
-        self.cent_to_facet_disp = cent_to_facet_disp
         self.facet_to_cell_bc = torch.stack(facet_to_cell_bc).squeeze()
-
         # Compute grad weighting
         self.cell_grad_stuff = self._grad_weighting(cell_to_facet, facet_to_cell, self.centroids, midpoints, normals)
 
@@ -344,18 +345,7 @@ class FVMMesh2D(FVMMesh):
 
 
 class FVMMesh3D(FVMMesh):
-    n_cells: int
-    n_facets: int
-    n_bc_facet: int
-
-    # Used for FVM calculations
-    bc_facet_mask: torch.Tensor  # shape = (n_facet)
-    volumes: torch.Tensor  # shape = (n_cells)
-    normals: torch.Tensor  # shape = (n_facet, 3)
-    facet_areas: torch.Tensor  # shape = (n_facet)
-    centroids: torch.Tensor  # shape = (n_cells, 3)
-    midpoints: torch.Tensor  # shape = (n_facet, 3)
-    facet_vertex: torch.Tensor  # shape = (n_facet, 3, 3)
+    dim = 3
 
     def __init__(self, vertices, cells, facets, bc_facet_mask, device="cuda"):
         super().__init__()
@@ -380,7 +370,7 @@ class FVMMesh3D(FVMMesh):
         self.facet_vertex = facet_vertex
         normals, facet_areas = self._facet_normal(facet_vertex)
         self.normals = normals  # shape = [n_facet, 3]
-        self.facet_areas = facet_areas  # shape = [n_facet]
+        # self.facet_areas = facet_areas  # shape = [n_facet]
         midpoints = torch.mean(facet_vertex, dim=1)  # shape = [n_facet, 3]
         self.midpoints = midpoints
 
@@ -394,7 +384,7 @@ class FVMMesh3D(FVMMesh):
         self.cell_to_facet = cell_to_facet
 
         # Sort cell in order of facet signed direction. ORDER: [-, +], so cell on right comes first.
-        self.cell_facet_signs, facet_to_cell, cent_to_facet_disp = self._cell_facet_sign(
+        self.cell_facet_signs, facet_to_cell, self.cent_to_facet_disp = self._cell_facet_sign(
             self.centroids, midpoints, cell_to_facet, self.normals, _facet_to_cell, cell_facet_idxs
         )
 
@@ -411,7 +401,6 @@ class FVMMesh3D(FVMMesh):
 
         self.normals_main = torch.stack(normals_main)
         self.facet_to_cell_main = torch.stack(facet_to_cell_main)
-        self.cent_to_facet_disp = cent_to_facet_disp
         self.facet_to_cell_bc = torch.stack(facet_to_cell_bc).squeeze()
 
         # Compute grad weighting
@@ -521,7 +510,6 @@ class FVMMesh3D(FVMMesh):
             A = sum_i w_i^2 (d_i d_i^T)
             b = sum_i w_i^2 d_i (u_i - u_c)
         """
-        n_dims = 3
         bound_facet_idxs = torch.nonzero(self.bc_facet_mask, as_tuple=False).flatten()
         global_to_local = {int(global_idx): local_idx for local_idx, global_idx in enumerate(bound_facet_idxs)}
 
@@ -568,7 +556,7 @@ class FVMMesh3D(FVMMesh):
         A_inv_di_T = torch.bmm(A_inv, dT * w2.unsqueeze(1)).float()  # shape: [n_cells, 3, 4]
 
         G_mats = []
-        for i in range(n_dims):
+        for i in range(self.dim):
             G_mat = build_sparse_gradient_matrix(combined_neigh, A_inv_di_T, i, self.n_cells, self.n_bc_facet)
             G_mats.append(G_mat)
 
@@ -592,7 +580,3 @@ class FVMMesh3D(FVMMesh):
         facet_dist_bc = torch.stack(facet_dist_bc)  # shape: [n_facet_bc]
 
         return cell_disps, facet_dist_bc, G_mats, combined_neigh
-
-
-    # _cell_facet_sign is inherited from the base FVMMesh class and is dimension-agnostic.
-    # It works unchanged for 3D since it only depends on normals and centroids having matching last dims.

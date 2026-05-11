@@ -13,6 +13,7 @@ class BCMode(Enum):
 class ConfigFVM(ABC):
     device: str = "cuda"
     compile: bool = True
+    profile: bool = False         # Used for profiling code.
 
     problem_setup: str = None    # {ellipse, nozzle}
     N_comp: int = 4     # Number of components in the state vector (e.g., [momentum_x, momentum_y, density, energy])
@@ -58,6 +59,7 @@ class ConfigBC(ABC):
     # Farfield physical parameters
     v_n_inf: float
     v_t_inf: float
+    v_inf: tuple[float, ...]         # Use for 3D
     rho_inf: float
     T_inf: float
 
@@ -94,8 +96,8 @@ class ConfigEllipse(ConfigFVM):
     n_iter: int = 50000     # Max number of iterations
 
     # mesh parameters
-    min_A: float = 0.05e-3
-    max_A: float = 0.05e-3
+    min_A: float = 1e-5
+    max_A: float = 1e-5
     lnscale: float = 2
 
     # Save configuration

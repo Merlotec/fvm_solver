@@ -12,8 +12,9 @@ if TYPE_CHECKING:
 
 class BoundarySetter:
     """ Non-orthogonal correction for Neumann BCs."""
+    dim: int
     n_comp: int
-    n_edges_bc: int
+    n_facets_bc: int
     n_cells: int
 
     grad_comps: torch.Tensor          # shape = [n_neum_edges, 2, 1]
@@ -32,45 +33,83 @@ class BoundarySetter:
         self.phy_setup = phy_setup
 
         self.bc_groups: dict = {}  # finalized: {BCMode: (BC, cell_indices)}
+        _bc_specs: dict = {}  # local dict to store specs before merging
 
-        self._bc_specs: dict = {}  # pending: {BCMode: list of (cfg, bc_cfg, bc_mask, cell_indices, bc_normals)}
-
+        self.dim, self.n_local = E_props.dim, E_props.n_local
         self.n_comp = E_props.n_comp
-        self.n_edges_bc = E_props.n_facets_bc
+        self.n_facets_bc = E_props.n_facets_bc
         self.n_cells = E_props.n_cells
+
         mesh = E_props.mesh
-        cell_to_facet = mesh.cell_to_facet.view(-1, 3)
+
+        # Get boundary condition setup
+        if torch.any(E_props.farfield_mask).item():
+            exit_cell2facet = mesh.facet_to_cell_bc[E_props.farfield_mask]
+            ff_facet_sign = 2 * (mesh.bc_facet_side[E_props.farfield_mask] - 0.5)
+            ff_facet_normals = mesh.normals_hat.squeeze()[mesh.bc_facet_mask][E_props.farfield_mask]
+            ff_facet_normals = ff_facet_normals * ff_facet_sign.unsqueeze(-1)
+            _bc_specs.setdefault(E_props.cfg.exit_cfg.mode, []).append(
+                (E_props.cfg, E_props.cfg.exit_cfg, E_props.farfield_mask, exit_cell2facet, ff_facet_normals)
+            )
+        if torch.any(E_props.inlet_mask).item():
+            inlet_cell2facet = mesh.facet_to_cell_bc[E_props.inlet_mask]
+            inlet_facet_sign = 2 * (mesh.bc_facet_side[E_props.inlet_mask] - 0.5)
+            inlet_facet_normals = mesh.normals_hat.squeeze()[mesh.bc_facet_mask][E_props.inlet_mask]
+            inlet_facet_normals = inlet_facet_normals * inlet_facet_sign.unsqueeze(-1)
+            _bc_specs.setdefault(E_props.cfg.inlet_cfg.mode, []).append(
+                (E_props.cfg, E_props.cfg.inlet_cfg, E_props.inlet_mask, inlet_cell2facet, inlet_facet_normals)
+            )
+
+        # _finalize_bc_groups logic
+        for mode, specs in _bc_specs.items():
+            cfg = specs[0][0]  # ConfigFVM, same for all specs in a group
+            bc_specs = [(bc_cfg, bc_mask, bc_normals) for _, bc_cfg, bc_mask, _, bc_normals in specs]
+            bc = BC(self.phy_setup, cfg, mode, bc_specs, self.n_facets_bc)
+
+            # Merge cell_indices: concat + reorder to align with bc.bc_idx
+            face_to_pos = torch.full((self.n_facets_bc,), -1, dtype=torch.long, device=self.device)
+            offset = 0
+            for _, _, bc_mask, _, _ in specs:
+                idx = torch.where(bc_mask)[0]
+                face_to_pos[idx] = torch.arange(offset, offset + idx.shape[0], device=self.device)
+                offset += idx.shape[0]
+            perm = face_to_pos[bc.bc_idx]
+            merged_cells = torch.cat([ci for _, _, _, ci, _ in specs])[perm]
+
+            self.bc_groups[mode] = (bc, merged_cells)
+
+        cell_to_facet = mesh.cell_to_facet.view(-1, self.n_local)
 
         # Flatten out all Neumann BCs and index according to order where_neum_all[0]
         neum_mask_all = torch.zeros_like(mesh.bc_facet_mask)
-        neum_mask_all = neum_mask_all.unsqueeze(-1).repeat(1, 4)
+        neum_mask_all = neum_mask_all.unsqueeze(-1).repeat(1, self.n_comp)
         neum_mask_all[mesh.bc_facet_mask] = E_props.neumann_mask
         where_neum_all = torch.where(neum_mask_all)
-        where_neum = {'edge': where_neum_all[0], 'comp': where_neum_all[1]}  # shape = [n_neum_edges, 2]
-        # Mapping from boundary id to boundary edge id
+        where_neum = {'facet': where_neum_all[0], 'comp': where_neum_all[1]}  # shape = [n_neum_facets, 2]
+        # Mapping from boundary id to boundary facet id
         self.where_neum = torch.where(E_props.neumann_mask)
 
-        # Mapping from boundary edge to cell
-        bc_edge_to_tri = torch.zeros_like(mesh.bc_facet_mask).long()
-        bc_edge_to_tri[mesh.bc_facet_mask] = mesh.facet_to_cell_bc
+        # Mapping from boundary facet to cell
+        bc_facet_to_cell = torch.zeros_like(mesh.bc_facet_mask).long()
+        bc_facet_to_cell[mesh.bc_facet_mask] = mesh.facet_to_cell_bc
 
         # Cells corresponding to Neumann BC
-        self.neum_cells = bc_edge_to_tri[where_neum_all[0]]  # shape = [n_neum_edges], which cells have neuman BCs
+        self.neum_cells = bc_facet_to_cell[where_neum_all[0]]  # shape = [n_neum_facets], which cells have neuman BCs
         where_neum['cells'] = self.neum_cells
-        # Edge within cell corresponding to Neumann BC
-        tri_edge_num = (where_neum['edge'].unsqueeze(-1).repeat(1, 3) == cell_to_facet[where_neum['cells']])
-        tri_edge_id = torch.where(tri_edge_num)[1]
-        where_neum['tri_edge_id'] = tri_edge_id
+        # Facet within cell corresponding to Neumann BC
+        cell_facet_num = (where_neum['facet'].unsqueeze(-1).repeat(1, self.n_local) == cell_to_facet[where_neum['cells']])
+        cell_facet_id = torch.where(cell_facet_num)[1]
+        where_neum['cell_facet_id'] = cell_facet_id
 
         # Which component of gradient is needed for Neumann BC
-        self.grad_comps = where_neum['comp'].unsqueeze(1).repeat(1, 2).unsqueeze(2)     # shape = [n_neum_edges, 2, 1]
-        # Normal vector of edges
-        n_hats = mesh.normals_hat.squeeze()[where_neum['edge']]  # shape = [n_neum_edges, 2]
-        # Displacement from centroid to edge
-        cent_to_edge = mesh.cent_to_facet_disp[where_neum['cells']].squeeze()  # shape = [n_neum_edge, 3, 2]
-        r = cent_to_edge[torch.arange(cent_to_edge.shape[0]), where_neum['tri_edge_id']]  # shape = [n_neum_edge, 2]
+        self.grad_comps = where_neum['comp'].unsqueeze(1).repeat(1, self.dim).unsqueeze(2)     # shape = [n_neum_facets, self.dim, 1]
+        # Normal vector of facets
+        n_hats = mesh.normals_hat.squeeze()[where_neum['facet']]  # shape = [n_neum_facets, 2]
+        # Displacement from centroid to facet
+        cent_to_facet = mesh.cent_to_facet_disp[where_neum['cells']].squeeze()  # shape = [n_neum_facet, 3, 2]
+        r = cent_to_facet[torch.arange(cent_to_facet.shape[0]), where_neum['cell_facet_id']]  # shape = [n_neum_facet, 2]
         # Normal component of r
-        d = n_hats * (r * n_hats).sum(dim=1, keepdim=True)  # shape = [n_neum_edge, 2]
+        d = n_hats * (r * n_hats).sum(dim=1, keepdim=True)  # shape = [n_neum_facet, 2]
         # Parallel component of r
         self.l = r - d
 
@@ -88,20 +127,15 @@ class BoundarySetter:
         boundary face values, then applies non-orthogonal correction and
         BC adjustments — one call per unique BCMode.
         """
-        # Lazy-finalize: merge BC specs into groups on first call
-        if self._bc_specs:
-            self._finalize_bc_groups()
-
         # Boundary face values
-        # U_face_flat = torch.addmv(self.b_bc, self.A_bc, Us.flatten())      # shape = [n_edges_bc * n_comp]
-        U_face_flat = self.A_bc.spMV(Us.flatten(), self.b_bc)      # shape = [n_edges_bc * n_comp]
+        U_face_flat = self.A_bc.spMV(Us.flatten(), self.b_bc)      # shape = [n_facets_bc * n_comp]
 
         # Non-orthogonal correction for boundary values, if gradients exist.
         if cell_grads is not None:
             self._non_orthogonal_correction(U_face_flat, cell_grads)
 
-        # Reshape back to (n_edges_bc, n_comp)
-        U_face = U_face_flat.view(self.n_edges_bc, self.n_comp)
+        # Reshape back to (n_facets_bc, n_comp)
+        U_face = U_face_flat.view(self.n_facets_bc, self.n_comp)
 
         # Apply BCs: one call per unique BCMode (merged masks vectorised together)
         for bc_calc, cell_indices in self.bc_groups.values():
@@ -132,32 +166,6 @@ class BoundarySetter:
         dU = self.A_corr.spMV(cell_grads.view(-1))
         U_face_flat.add_(dU)
 
-
-    def add_bc(self, cfg: ConfigFVM, bc_cfg: ConfigBC, bc_mask, cell_indices, bc_normals):
-        """Register a boundary-condition specification to be merged by mode later."""
-        mode = bc_cfg.mode
-        self._bc_specs.setdefault(mode, []).append((cfg, bc_cfg, bc_mask, cell_indices, bc_normals))
-
-    def _finalize_bc_groups(self):
-        """Merge pending BC specs: one BC object + one cell-index tensor per unique BCMode."""
-        for mode, specs in self._bc_specs.items():
-            cfg = specs[0][0]  # ConfigFVM, same for all specs in a group
-            bc_specs = [(bc_cfg, bc_mask, bc_normals) for _, bc_cfg, bc_mask, _, bc_normals in specs]
-            bc = BC(self.phy_setup, cfg, mode, bc_specs, self.n_edges_bc)
-
-            # Merge cell_indices: concat + reorder to align with bc.bc_idx
-            face_to_pos = torch.full((self.n_edges_bc,), -1, dtype=torch.long, device=self.device)
-            offset = 0
-            for _, _, bc_mask, _, _ in specs:
-                idx = torch.where(bc_mask)[0]
-                face_to_pos[idx] = torch.arange(offset, offset + idx.shape[0], device=self.device)
-                offset += idx.shape[0]
-            perm = face_to_pos[bc.bc_idx]
-            merged_cells = torch.cat([ci for _, _, _, ci, _ in specs])[perm]
-
-            self.bc_groups[mode] = (bc, merged_cells)
-        self._bc_specs.clear()
-
     def _build_sparse_nonorthog_correct(self):
         """
         Builds sparse A and b such that:
@@ -170,7 +178,7 @@ class BoundarySetter:
         """
         device = self.device
         n_comp = self.n_comp
-        n_edges_bc = self.n_edges_bc
+        n_facets_bc = self.n_facets_bc
         n_cells = self.n_cells
 
         # Number of Neumann correction entries
@@ -184,11 +192,11 @@ class BoundarySetter:
 
         row_ids = face_ids * n_comp + face_comps  # [n_neum]
 
-        # Each correction uses two spatial gradient components
-        spatial_dirs = torch.arange(2, device=device)  # [0, 1]
+        # Each correction uses spatial_dirs spatial gradient components
+        spatial_dirs = torch.arange(self.dim, device=device)  # [0, 1] for 2D, [0, 1, 2] for 3D
 
-        # Expand rows for x/y gradient contributions
-        rows = row_ids[:, None].expand(n_neum, 2).reshape(-1)
+        # Expand rows for x/y(/z) gradient contributions
+        rows = row_ids[:, None].expand(n_neum, self.dim).reshape(-1)
 
         # Cell ids used by Neumann faces
         cell_ids = self.neum_cells.to(device)
@@ -197,28 +205,28 @@ class BoundarySetter:
         # Usually this is the same as face_comps, but this follows your original gather logic.
         grad_comps = self.grad_comps.to(device)
 
-        # Make grad_comps shape [n_neum, 2]
+        # Make grad_comps shape [n_neum, self.dim]
         if grad_comps.ndim == 3:
             grad_comps = grad_comps.squeeze(-1)
         elif grad_comps.ndim == 1:
-            grad_comps = grad_comps[:, None].expand(n_neum, 2)
+            grad_comps = grad_comps[:, None].expand(n_neum, self.dim)
 
         # Column ids into flattened cell_grads:
         # cell_grads[cell, spatial_dir, comp]
-        # flat index = cell * (2 * n_comp) + spatial_dir * n_comp + comp
+        # flat index = cell * (self.dim * n_comp) + spatial_dir * n_comp + comp
         cols = (
-                cell_ids[:, None] * (2 * n_comp)
+                cell_ids[:, None] * (self.dim * n_comp)
                 + spatial_dirs[None, :] * n_comp
                 + grad_comps
         ).reshape(-1)
 
-        # Coefficients are self.l[:, 0] and self.l[:, 1]
+        # Coefficients are self.l
         vals = self.l.to(device=device).reshape(-1)
 
         A = torch.sparse_coo_tensor(
             indices=torch.stack([rows, cols], dim=0),
             values=vals,
-            size=(n_edges_bc * n_comp, n_cells * 2 * n_comp),
+            size=(n_facets_bc * n_comp, n_cells * self.dim * n_comp),
             device=device,
         ).coalesce()
 
@@ -227,7 +235,7 @@ class BoundarySetter:
         return A
 
     def _build_spm_face_vals(self, E_props: FacetFlux):
-        """ Compute bc edge values using sparse matrix multiplication. """
+        """ Compute bc facet values using sparse matrix multiplication. """
 
         device = E_props.device
         n_bc = E_props.n_facets_bc
@@ -238,7 +246,7 @@ class BoundarySetter:
         N = n_bc * n_comp
 
         # Create flattened indices for the boundary rows and the corresponding component.
-        # Each boundary edge gives rise to n_comp rows.
+        # Each boundary facet gives rise to n_comp rows.
         bc_rows = torch.arange(n_bc, device=device).unsqueeze(1).expand(n_bc, n_comp).reshape(-1)
         comp_idx = torch.arange(n_comp, device=device).unsqueeze(0).expand(n_bc, n_comp).reshape(-1)
 
@@ -249,10 +257,10 @@ class BoundarySetter:
         # --- Build sparse matrix A ---
         # For Neumann entries, we want to extract the cell value from Us.
         # For each Neumann row, the corresponding column in Us (flattened) is given by:
-        #   col = self.edge_to_tri_bc[ edge_index ] * n_comp + component
+        #   col = self.facet_to_cell_bc[ facet_index ] * n_comp + component
         neum_indices = torch.nonzero(neum_mask, as_tuple=False).squeeze(1)  # indices where Neumann is True.
         A_rows = neum_indices
-        # bc_rows[neum_indices] gives the corresponding boundary edge for each flattened row.
+        # bc_rows[neum_indices] gives the corresponding boundary facet for each flattened row.
         A_cols = E_props.mesh.facet_to_cell_bc[bc_rows[neum_indices]] * n_comp + comp_idx[neum_indices]
         A_vals = torch.ones_like(A_rows, dtype=torch.float32, device=device)
 
@@ -264,7 +272,7 @@ class BoundarySetter:
         b_bc = torch.empty(N, device=device, dtype=torch.float32)
         # For Dirichlet entries, the prescribed value should override any extracted value.
         b_bc[dirich_mask] = E_props.dirich_val
-        # For Neumann entries, add the offset computed from the edge distance.
+        # For Neumann entries, add the offset computed from the facet distance.
         # Here, we select the proper component value from self.neumann_val using comp_idx.
         b_bc[neum_mask] = E_props.neumann_val[comp_idx[neum_mask]] * E_props.mesh.facet_dists_bc.flatten()[neum_mask]
 
@@ -272,11 +280,13 @@ class BoundarySetter:
 
 
 class BC:
-    bc_normals: Tensor     # shape = [n_inlet_edges, 2]
-    bc_tangents: Tensor
+    dim: int
+    bc_normals: Tensor      # shape = [n_bc, dim]
+    v_n_inf: Tensor         # shape = [n_bc]
+    v_t_inf: Tensor         # shape = [n_bc, dim]
 
     def __init__(self, phy_setup: PhysicalSetup, cfg: ConfigFVM, mode: BCMode,
-                 specs: list, n_edges_bc: int):
+                 specs: list, n_facets_bc: int):
         """
         Build a merged BC from multiple same-mode boundary regions.
 
@@ -285,12 +295,13 @@ class BC:
             cfg: global configuration.
             mode: the BCMode shared by all specs.
             specs: list of (bc_cfg: ConfigBC, bc_mask: Tensor, bc_normals: Tensor).
-                   bc_mask has shape [n_edges_bc]; bc_normals has shape [n_region, 2].
-            n_edges_bc: total number of boundary edges.
+                   bc_mask has shape [n_facets_bc]; bc_normals has shape [n_region, 2].
+            n_facets_bc: total number of boundary facets.
         """
         self.cfg = cfg
         self.device = cfg.device
         self.phy_setup = phy_setup
+        self.dim = phy_setup.dim
 
         # --- Merge masks ---
         merged_mask = specs[0][1].clone()
@@ -301,7 +312,7 @@ class BC:
 
         # --- Build per-face parameter vectors ---
         # Concatenate per-region tensors, then reorder to align with bc_idx.
-        face_to_pos = torch.full((n_edges_bc,), -1, dtype=torch.long, device=self.device)
+        face_to_pos = torch.full((n_facets_bc,), -1, dtype=torch.long, device=self.device)
         offset = 0
         for _, bc_mask, _ in specs:
             idx = torch.where(bc_mask)[0]
@@ -312,7 +323,7 @@ class BC:
         def _cat_reorder(lst):
             return torch.cat(lst)[perm]
 
-        normals_list, tangents_list = [], []
+        normals_list = []
         T_inf_list, rho_inf_list, v_n_inf_list, v_t_inf_list = [], [], [], []
         p_inf_list = []
         R_m_list, R_p_list, S_list = [], [], []
@@ -323,21 +334,31 @@ class BC:
         for bc_cfg, bc_mask, bc_normals in specs:
             n = int(bc_mask.sum().item())
             normals_list.append(bc_normals)
-            tangents_list.append(torch.stack((-bc_normals[:, 1], bc_normals[:, 0]), dim=1))
 
             T_inf = torch.full((n,), bc_cfg.T_inf, device=self.device)
             rho_inf = torch.full((n,), bc_cfg.rho_inf, device=self.device)
             T_inf_list.append(T_inf)
             rho_inf_list.append(rho_inf)
-            # v_n_inf is negated: bc_cfg.v_n_inf is inward-positive, we store outward-positive
-            v_n_inf_list.append(torch.full((n,), -bc_cfg.v_n_inf, device=self.device))
-            v_t_inf_list.append(torch.full((n,), bc_cfg.v_t_inf, device=self.device))
+            if self.dim == 2:
+                tangents = torch.stack((-bc_normals[:, 1], bc_normals[:, 0]), dim=1)
+                v_t_inf = tangents * bc_cfg.v_t_inf
+                v_t_inf_list.append(v_t_inf)
+                # v_n_inf is negated: bc_cfg.v_n_inf is inward-positive, we store outward-positive
+                v_n_inf_list.append(torch.full((n,), -bc_cfg.v_n_inf, device=self.device))
+
+            else:
+                # 3D, get tangential and normal component directly.
+                v_inf = torch.tensor(bc_cfg.v_inf, device=self.device)
+                v_n_inf = (bc_normals * v_inf).sum(dim=1)
+                v_t_inf = v_inf - bc_normals * v_n_inf.unsqueeze(-1)
+                v_t_inf_list.append(v_t_inf)
+                v_n_inf_list.append(v_n_inf)
 
             if mode == BCMode.Characteristic:
-                _, p_inf = phy_setup.eos_cP(rho_inf, T_inf)
+                a_inf, p_inf = phy_setup.eos_c(rho_inf, T_inf), phy_setup.eos_P(rho_inf, T_inf)
                 p_inf_list.append(p_inf)
             elif mode == BCMode.Farfield:
-                a_inf, p_inf = phy_setup.eos_cP(rho_inf, T_inf)
+                a_inf, p_inf = phy_setup.eos_c(rho_inf, T_inf), phy_setup.eos_P(rho_inf, T_inf)
                 v_n = torch.full((n,), bc_cfg.v_n_inf, device=self.device)
                 # R_m_far = (-v_n_inf) - 2a/(γ-1), R_p_far = (-v_n_inf) + 2a/(γ-1)
                 R_m_list.append(-v_n - 2 * a_inf / (self.gamma - 1))
@@ -345,11 +366,10 @@ class BC:
                 S_list.append(p_inf / (rho_inf ** self.gamma))
 
         self.bc_normals = _cat_reorder(normals_list)
-        self.bc_tangents = _cat_reorder(tangents_list)
         self.T_inf = _cat_reorder(T_inf_list)
         self.rho_inf = _cat_reorder(rho_inf_list)
-        self.v_n_inf = _cat_reorder(v_n_inf_list)
-        self.v_t_inf = _cat_reorder(v_t_inf_list)
+        self.v_n_inf = _cat_reorder(v_n_inf_list)       # shape = [n_bc]
+        self.v_t_inf = _cat_reorder(v_t_inf_list)       # shape = [n_bc, dim]
 
         match mode:
             case BCMode.Characteristic:
@@ -365,21 +385,20 @@ class BC:
 
     def set_bc_U_face(self, U_face, Us_bc_cells):
         """ Set U_face.
-            U_face: shape = [n_edges, n_comp], all boundary edges. Set value in place, given by mask.
-            Us_bc_cells: shape = [n_bc_edges, n_comp], cell values at boundary edges.
+            U_face: shape = [n_facets, n_comp], all boundary facets. Set value in place, given by mask.
+            Us_bc_cells: shape = [n_bc_facets, n_comp], cell values at boundary facets.
         """
         raise NotImplementedError
 
     def _split_Vs(self, Vs):
         """ Split velocity into normal and tangential components.
             Vs: shape = [n_bc, 2]
-            Return V_n, V_t: shape = [n_bc], [n_bc]
+            Return V_n, V_t: shape = [n_bc], [n_bc, dim]
         """
         n = self.bc_normals
-        t = self.bc_tangents
 
         v_n = (Vs * n).sum(dim=1)
-        v_t = (Vs * t).sum(dim=1)
+        v_t = Vs - v_n.unsqueeze(-1) * n
 
         return v_n, v_t
 
@@ -387,15 +406,13 @@ class BC:
         """ Combine normal and tangential component of Vs back into x-y components."
             V_n: shape = [n_bc]
             V_t: shape = [n_bc]
-            Return V_x, v_y: shape = [n_bc]
+            Return V: shape = [n_bc, dim]
         """
         n = self.bc_normals
-        t = self.bc_tangents
 
-        V = v_n.unsqueeze(-1) * n + v_t.unsqueeze(-1) * t
-        v_x, v_y = V[:, 0], V[:, 1]
+        V = v_n.unsqueeze(-1) * n + v_t
 
-        return v_x, v_y, V
+        return V
 
     def _gating(self, v_n_int, c_int):
         """ Gating for forward and backward characteristics.
@@ -423,19 +440,18 @@ class BC:
             Then solve for delta W_b by continuing characteristics from the left and right side.
             Tangential velocity is interpolated as well.
 
-            U_face.shape = [n_bc_edges, n_comp], all boundary edges. Set value in place, given by mask.
-            Us_bc_cells.shape = [n_inlet, n_comp], cell values at boundary edges.
+            U_face.shape = [n_bc_facets, n_comp], all boundary facets. Set value in place, given by mask.
+            Us_bc_cells.shape = [n_inlet, n_comp], cell values at boundary facets.
         """
         # 1) Interior properties
-        Vs = Us_bc_cells[:, :2]
-        rho_int = Us_bc_cells[:, 2]
-        T_int = Us_bc_cells[:, 3]
+        Vs = Us_bc_cells[:, :self.dim]
+        rho_int = Us_bc_cells[:, self.dim]
+        T_int = Us_bc_cells[:, self.dim+1]
 
         v_n_int, v_t_int = self._split_Vs(Vs)
 
-        # p_int = self.phy_setup.eos_P(rho_int, T_int)
-        # c_int = self.phy_setup.eos_c(rho_int, T_int)
-        c_int, p_int = self.phy_setup.eos_cP(rho_int, T_int)
+        p_int = self.phy_setup.eos_P(rho_int, T_int)
+        c_int = self.phy_setup.eos_c(rho_int, T_int)
 
         # 2) Exterior - broadcasted vectors
         drho = self.rho_inf - rho_int
@@ -470,6 +486,7 @@ class BC:
         dchi_2 = g2 * dchi_2
 
         # 4.1) Tangential velocity interpolation
+        g1 = g1.unsqueeze(1)
         v_t_b = g1 * v_t_int + (1.0 - g1) * self.v_t_inf
 
         # 5) Reconstruct dW = R @ dChi
@@ -485,12 +502,12 @@ class BC:
         p_b = p_int + d_p
 
         # 6) Recombine velocity
-        v_x_b, v_y_b, _ = self._recombine_Vs(v_n_b, v_t_b)
+        Vs = self._recombine_Vs(v_n_b, v_t_b)
 
         # 7) EOS back to temperature
         T_b = self.phy_setup.eos_T(rho_b, p_b)
 
-        U_face_b = torch.stack((v_x_b, v_y_b, rho_b, T_b), dim=-1)
+        U_face_b = torch.cat((Vs, rho_b.unsqueeze(-1), T_b.unsqueeze(-1)), dim=-1)
         U_face[self.bc_idx] = U_face_b
 
     def BC_farfield(self, U_face, Us_bc_cells):
@@ -539,10 +556,10 @@ class BC:
 
         Parameters:
         -----------
-        U_face : torch.Tensor, shape [n_edges_bc, n_comp]
+        U_face : torch.Tensor, shape [n_facets_bc, n_comp]
             Boundary face values to be modified in place
-        Us_bc_cells : torch.Tensor, shape [n_farfield_edges, n_comp]
-            Interior cell values adjacent to farfield edges [V_x, V_y, ρ, T]
+        Us_bc_cells : torch.Tensor, shape [n_farfield_facets, n_comp]
+            Interior cell values adjacent to farfield facets [V_x, V_y, ρ, T]
         dt : float, optional
             Time step (unused, kept for interface compatibility)
 
@@ -556,9 +573,9 @@ class BC:
         gm1 = self.gamma - 1
 
         # Interior properties
-        V_int = Us_bc_cells[:, [0, 1]]                                    # shape = [n_ff_edge, 2]
-        rho_int = Us_bc_cells[:, 2]                                   # shape = [n_ff_edge]
-        T_int = Us_bc_cells[:, 3]                                     # shape = [n_ff_edge]
+        V_int = Us_bc_cells[:, [0, 1]]                                    # shape = [n_ff_facet, 2]
+        rho_int = Us_bc_cells[:, 2]                                   # shape = [n_ff_facet]
+        T_int = Us_bc_cells[:, 3]                                     # shape = [n_ff_facet]
         # Parallel and tangential velocity
         V_n, V_t = self._split_Vs(V_int)
 

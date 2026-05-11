@@ -6,9 +6,8 @@ Demonstrates the pipeline:
 """
 import numpy as np
 import pyvista as pv
-from mesh_gen.mesh_3d import Box3D, Sphere3D, Cylinder3D, create_mesh_3d
-from mesh_gen.mesh_3d.utils import plot_interactive, plot_clip, plot_slice
-from mesh_gen.mesh_gen_utils import MeshProps
+from mesh_gen.mesh_3d.meshes_fvm import gen_mesh_cube_sphere
+from mesh_gen.mesh_3d.utils import plot_interactive
 
 
 def build_pyvista_grid(points, tetra):
@@ -31,16 +30,9 @@ def tet_volumes(points, tetra):
 def cube_sphere_example():
     """Box domain with a spherical hole at the centre."""
     print("=== Cube-with-sphere-hole mesh ===")
-    mesh_props = MeshProps(min_area=0.05, max_area=0.1, lengthscale=2.0)
-    coords = [
-        Box3D(Xmin=[-1, -1, -1], Xmax=[1, 1, 1], dist_req=False, name="Farfield"),
-        Sphere3D(center=[0, 0, 0], radius=0.45, hole=True, dist_req=True, name="NavierWall"),
-    ]
-    mesh_specs, marker_tags = create_mesh_3d(coords, mesh_props)
-    (points, tetra), (_, face_markers), (int_faces, bound_faces) = mesh_specs
+    points, tetra, (int_faces, bound_faces), face_tag = gen_mesh_cube_sphere(areas=(0.05, 0.1), cell_lnscale=2.0)
     print(f"  Points: {points.shape[0]}, Tets: {tetra.shape[0]}")
     print(f"  Interior faces: {int_faces.shape[0]}, Boundary faces: {bound_faces.shape[0]}")
-    face_tag = [marker_tags[int(i)] for i in face_markers]
     from collections import Counter
     print(f"  Boundary tags: {Counter(face_tag)}")
     grid = build_pyvista_grid(points, tetra)
@@ -50,36 +42,12 @@ def cube_sphere_example():
     return grid
 
 
-def pipe_example():
-    """Box domain with a cylindrical hole along the z-axis."""
-    print("\n=== Pipe (cylinder hole) mesh ===")
-    mesh_props = MeshProps(min_area=0.025, max_area=0.1, lengthscale=0.5)
-    L = 1.5
-    coords = [
-        Box3D(Xmin=[-L/2, -L/2, -L/2], Xmax=[L/2, L/2, L/2], dist_req=False, name="Farfield"),
-        Cylinder3D(center=[0, 0, 0], radius=0.5, height=L * 0.8, hole=True, dist_req=True, name="NavierWall"),
-    ]
-    mesh_specs, marker_tags = create_mesh_3d(coords, mesh_props)
-    (points, tetra), (_, face_markers), (int_faces, bound_faces) = mesh_specs
-    print(f"  Points: {points.shape[0]}, Tets: {tetra.shape[0]}")
-    print(f"  Interior faces: {int_faces.shape[0]}, Boundary faces: {bound_faces.shape[0]}")
-    grid = build_pyvista_grid(points, tetra)
-    grid.cell_data["volume"] = tet_volumes(points, tetra)
-    # print(f"  Volume range: [{grid.cell_data['volume'].min():.4f}, "
-    #       f"{grid.cell_data['volume'].max():.4f}]")
-    return grid
-
-
 def main():
-    # grid_cube_sphere = cube_sphere_example()
-    #
-    # print("\nOpening interactive viewer (cube + sphere hole) ...")
-    # plot_interactive(grid_cube_sphere)
+    grid_cube_sphere = cube_sphere_example()
 
-    grid_pipe = pipe_example()
-    print("\nOpening interactive viewer (pipe) ...")
-    plot_interactive(grid_pipe)
-    plot_slice(grid_pipe)
+    print("\nOpening interactive viewer (cube + sphere hole) ...")
+    plot_interactive(grid_cube_sphere)
+
 
 
 if __name__ == "__main__":

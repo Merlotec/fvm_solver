@@ -278,10 +278,10 @@ def lift_sparse_matrix(A_old: torch.Tensor, n_comp: int):
     return A_new
 
 
-def interleave_sparse_rows(a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
+def interleave_sparse_rows(tensors: list[torch.Tensor]) -> torch.Tensor:
     """
-    Given sparse COO tensors a, b of shape (m, n), return sparse COO tensor
-    of shape (2m, n) with rows interleaved:
+    Given a list of sparse COO tensors of shape (m, n), return a sparse COO tensor
+    of shape (k*m, n) (where k is the number of tensors) with rows interleaved.
 
         out[0] = a[0]
         out[1] = b[0]
@@ -290,34 +290,36 @@ def interleave_sparse_rows(a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
         ...
 
     """
-    if a.layout != torch.sparse_coo or b.layout != torch.sparse_coo:
-        raise TypeError("a and b must be sparse COO tensors")
+    if not tensors:
+        raise ValueError("Must provide at least one tensor")
 
-    if a.shape != b.shape or a.ndim != 2:
-        raise ValueError("a and b must both have shape (m, n)")
+    for t in tensors:
+        if t.layout != torch.sparse_coo:
+            raise TypeError("All tensors must be sparse COO tensors")
 
-    a = a.coalesce()
-    b = b.coalesce()
+    m, n = tensors[0].shape
+    for t in tensors:
+        if t.shape != (m, n) or t.ndim != 2:
+            raise ValueError("All tensors must have shape (m, n)")
 
-    m, n = a.shape
+    k = len(tensors)
+    new_indices = []
+    new_values = []
 
-    ai = a.indices()
-    bi = b.indices()
+    for i, t in enumerate(tensors):
+        t = t.coalesce()
+        indices = t.indices().clone()
+        indices[0] = k * indices[0] + i
+        new_indices.append(indices)
+        new_values.append(t.values())
 
-    # Map row r from a -> 2r, row r from b -> 2r + 1
-    ai_new = ai.clone()
-    bi_new = bi.clone()
-
-    ai_new[0] = 2 * ai[0]
-    bi_new[0] = 2 * bi[0] + 1
-
-    indices = torch.cat([ai_new, bi_new], dim=1)
-    values = torch.cat([a.values(), b.values()], dim=0)
+    indices = torch.cat(new_indices, dim=1)
+    values = torch.cat(new_values, dim=0)
 
     return torch.sparse_coo_tensor(
         indices,
         values,
-        size=(2 * m, n),
-        device=a.device,
-        dtype=a.dtype,
+        size=(k * m, n),
+        device=tensors[0].device,
+        dtype=tensors[0].dtype,
     ).coalesce()

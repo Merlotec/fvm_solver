@@ -22,6 +22,11 @@ class Facet:
     tag: str = None
 
     def __post_init__(self):
+        if self.U is None:
+            self.U = [None] * len(self.edge_type)
+        if self.dUdn is None:
+            self.dUdn = [None] * len(self.edge_type)
+
         for e, u, dudn in zip(self.edge_type, self.U, self.dUdn, strict=True):
             if FacetBCTypes.Dirich in e:
                 assert u is not None, "Dirichlet BC requires a value."

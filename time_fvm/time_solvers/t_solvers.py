@@ -14,14 +14,14 @@ if TYPE_CHECKING:
 class FVMCells:
     state: torch.Tensor  # shape = (n_cells, N_component)
     """ State stored as: [momentum_x, momenum_y, density, energy] """
-    def __init__(self, n_cells, n_component, phys_setup: PhysicalSetup, init_val=None, device="cpu"):
+    def __init__(self, n_cells, n_comp, phys_setup: PhysicalSetup, init_val=None, device="cpu"):
         self.device = device
         self.phys_setup = phys_setup
 
         if init_val is None:
-            self.state = torch.zeros(n_cells, n_component, device=device)
+            self.state = torch.zeros(n_cells, n_comp, device=device)
         else:
-            assert init_val.shape == (n_cells, n_component), f'Incorrect us init shape {init_val.shape = }'
+            assert init_val.shape == (n_cells, n_comp), f'Incorrect us init shape {init_val.shape = }'
             self.state = init_val.to(device)
 
     def update_cells(self, state_new):
@@ -53,6 +53,7 @@ class TSolver(ABC):
         """
         Initialize the time-stepping solver.
         """
+        self.cfg = cfg
         self.device = cfg.device
         self.n_steps = cfg.n_iter
         self.cells = cells
@@ -126,11 +127,11 @@ class TSolver(ABC):
 
     @torch.inference_mode()
     def solve(self):
-        run = True
-        if run:
-            self._solve()
-        else:
+        profile = self.cfg.profile
+        if profile:
             self._solve_profile()
+        else:
+            self._solve()
 
     def _solve_step(self, t):
         new_Us = self._step(t)

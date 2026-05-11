@@ -8,7 +8,7 @@ from time_fvm.fvm_stepping.facet_boundary import BoundarySetter
 from time_fvm.fvm_stepping.limiter import SlopeLimiter
 if TYPE_CHECKING:
     from time_fvm.fvm_equation import PhysicalSetup
-    from time_fvm.mesh_utils.fvm_mesh import FVMMesh2D
+    from time_fvm.mesh_utils.fvm_mesh import FVMMesh2D, FVMMesh
     from time_fvm.config_fvm import ConfigFVM
 
 
@@ -16,27 +16,29 @@ class MeshCache:
     """ Stores unchanging device-tensor mesh geometry, separated from FacetFlux.
 
         Access CPU-side attributes (centroids, cells, vertices, facets,
-        midpoints, areas, etc.) via mesh.fvm_mesh.xxx for consumers like saving.py.
+        midpoints, volumes, etc.) via mesh.fvm_mesh.xxx for consumers like saving.py.
     """
     device: str
-    fvm_mesh: 'FVMMesh2D'  # Original CPU-side FVMMesh2D
+    fvm_mesh: 'FVMMesh'
 
     # Dimensions
+    dim: int
+    n_neigh: int        # Numer of facets around each cell
     n_facets: int
     n_cells: int
     n_facets_bc: int
 
-    # Device tensors — copied / derived from FVMMesh2D
-    normals: torch.Tensor           # (n_facets, 2)
-    edge_len: torch.Tensor          # (n_facets, 1)
-    normals_hat: torch.Tensor       # (n_facets, 2, 1)
-    X_orthog: torch.Tensor          # (n_facets, 2, 1)
-    cell_disps: torch.Tensor        # (n_facets, 2)
+    # General tensors
+    normals: torch.Tensor           # (n_facets, dim)
+    facet_size: torch.Tensor          # (n_facets, 1)
+    normals_hat: torch.Tensor       # (n_facets, dim, 1)
+    X_orthog: torch.Tensor          # (n_facets, dim, 1)
+    cell_disps: torch.Tensor        # (n_facets, dim)
     facet_to_cell_main: torch.Tensor  # (n_facets_m, 2)
     cell_dist_proj: torch.Tensor     # (n_facets_m)
     cell_facet_signs: torch.Tensor    # (3 * n_cells)  flattened
     cell_to_facet: torch.Tensor       # (3 * n_cells)  flattened
-    cent_to_facet_disp: torch.Tensor # (n_cells, 3, 2, 1)
+    cent_to_facet_disp: torch.Tensor # (n_cells, 3, dim, 1)
 
     # BC attributes
     bc_facet_mask: torch.Tensor     # (n_facets)
@@ -46,16 +48,18 @@ class MeshCache:
     facet_dists_bc: torch.Tensor    # (n_facets_bc, n_comp)
 
     # Calculations
-    G_mats: SPM            # sparse SPM (2*n_cells, n_cells + n_facets_bc)
+    G_mats: SPM            # sparse SPM (dim*n_cells, n_cells + n_facets_bc)
     neigh_combine: torch.Tensor     # (n_cells, 2)
     A_face_grad: SPM       # sparse SPM (n_facets*n_comp, n_cells*n_comp)
     b_face_grad: torch.Tensor       # (n_facets*n_comp,)
     flux_mat: SPM                   # (n_cells, n_facets)
 
-    def __init__(self, mesh_setup: FVMMesh2D, n_comp: int, device: str):
+    def __init__(self, mesh_setup: FVMMesh, n_comp: int, device: str):
         self.fvm_mesh = mesh_setup
         self.device = device
 
+        self.dim = mesh_setup.dim
+        self.n_neigh = self.dim + 1
         self.n_facets = mesh_setup.n_facets
         self.n_cells = mesh_setup.n_cells
         self.n_facets_bc = int(mesh_setup.bc_facet_mask.sum().item())
@@ -63,26 +67,25 @@ class MeshCache:
         # --- Copy tensors to device ---
         self.facet_to_cell_main = mesh_setup.facet_to_cell_main.to(device)
         self.cent_to_facet_disp = mesh_setup.cent_to_facet_disp.to(device).unsqueeze(-1)
-        self.cell_facet_signs = (-mesh_setup.cell_facet_signs + 1 / 2).to(torch.int32).view(3 * self.n_cells).to(device)    # From {-1, 1} to {0, 1}
-        self.cell_to_facet = mesh_setup.cell_to_facet.view(3 * self.n_cells).to(device)
+        self.cell_facet_signs = (-mesh_setup.cell_facet_signs + 1 / 2).to(torch.int32).view(self.n_neigh * self.n_cells).to(device)    # From {-1, 1} to {0, 1}
+        self.cell_to_facet = mesh_setup.cell_to_facet.view(self.n_neigh * self.n_cells).to(device)
         self.facet_to_cell_bc = mesh_setup.facet_to_cell_bc.to(device)
         self.bc_facet_mask = mesh_setup.bc_facet_mask.to(device)
 
         (cell_disps, facet_dists_bc, G_mats, neigh_combine) = mesh_setup.cell_grad_stuff
         self.facet_dists_bc = facet_dists_bc.to(device).unsqueeze(-1).expand(-1, n_comp)
-        G_mats = interleave_sparse_rows(G_mats[0], G_mats[1]) # Want output to be easily reshaped.
-        # self.G_mats = to_csr(G_mats, device)
+        G_mats = interleave_sparse_rows(G_mats) # Want output to be easily reshaped.
         self.G_mats = to_sparse(G_mats, device)
         self.neigh_combine = neigh_combine.to(device)
 
         self.cell_disps = cell_disps.to(device)
         self.normals = mesh_setup.normals.to(device)
-        self.edge_len = torch.norm(self.normals, dim=1, keepdim=True).to(device)
-        normal_hat = self.normals / self.edge_len
+        self.facet_size = torch.norm(self.normals, dim=1, keepdim=True).to(device)
+        normal_hat = self.normals / self.facet_size
         self.normals_hat = normal_hat.unsqueeze(-1)
 
         # --- Non-orthogonal correction ---
-        cell_disps_full = torch.full((self.n_facets, 2), float("nan"), device=device)
+        cell_disps_full = torch.full((self.n_facets, self.dim), float("nan"), device=device)
         cell_disps_full[~self.bc_facet_mask] = self.cell_disps
         d_cos_theta = (normal_hat * cell_disps_full).sum(dim=1)
         self.cell_dist_proj = d_cos_theta
@@ -91,7 +94,7 @@ class MeshCache:
         self.X_orthog = X_orthog.unsqueeze(dim=-1)
 
         # --- Boundary facet side tracking ---
-        face_assigned = torch.zeros((self.n_facets, 2), dtype=torch.bool, device=device)
+        face_assigned = torch.zeros((self.n_facets, self.dim), dtype=torch.bool, device=device)
         face_assigned[self.cell_to_facet, self.cell_facet_signs] = True
         assigned_boundary = face_assigned[self.bc_facet_mask]
         self.bc_facet_side = (~assigned_boundary).float().argmax(dim=1).int()
@@ -195,24 +198,23 @@ class MeshCache:
 
     def _build_flux_mat(self, dtype=torch.float32):
         """
-        Build the incidence matrix T of shape (n_tri, n_edges).
+        Build the incidence matrix T of shape (n_tri, n_facets).
         For each cell i and local facet j, we set:
             T[i, cell_to_facet[i, j]] = cell_facet_sign[i, j].
         """
         c_print("Constricting flux matrix", color="bright_magenta")
-        # and that self.areas is a tensor of length n_tri.
         n_cell = self.n_cells  # typically, n_local == 3
 
-        # Create row indices: each triangle i contributes n_local entries.
-        row_indices = torch.arange(n_cell).unsqueeze(1).expand(n_cell, 3).reshape(-1)
+        # Create row indices: each cell i contributes n_neigh entries.
+        row_indices = torch.arange(n_cell).unsqueeze(1).expand(n_cell, self.n_neigh).reshape(-1)
 
         # Flatten the edge indices from cell_to_facet for column indices.
         col_indices = self.cell_to_facet.reshape(-1).cpu()
         # Flatten the sign values from tri_edge_sign.
         values = self.cell_facet_signs.reshape(-1).cpu().to(dtype) * 2 - 1
-        # Compute the inverse areas (A_inv is diagonal) and scale the nonzero values.
-        areas_inv = (1.0 / self.fvm_mesh.areas.cpu()).to(dtype)
-        D_values = values * areas_inv[row_indices]
+        # Compute the inverse volumes (V_inv is diagonal) and scale the nonzero values.
+        volumes_inv = (1.0 / self.fvm_mesh.volumes.cpu()).to(dtype)
+        D_values = values * volumes_inv[row_indices]
         # Stack row and column indices for the sparse tensor.
         D_indices = torch.stack([row_indices, col_indices])
 
@@ -225,6 +227,8 @@ class MeshCache:
 
 class FacetFlux:
     device: str
+    dim: int
+    n_local: int
     n_facets: int
     n_cells: int
     n_comp: int
@@ -239,7 +243,7 @@ class FacetFlux:
     dirich_val: torch.Tensor
     neumann_val: torch.Tensor
     boundary_setter: BoundarySetter
-    bc_type_str: list[str]
+    bc_type_str: list[str]          # For saving mesh.
 
     # Temporary / computed variables (set by precompute_shared)
     grad_V: torch.Tensor
@@ -253,7 +257,7 @@ class FacetFlux:
     cell_grads: torch.Tensor = None
     U_face_all: torch.Tensor = None     # Pre allocated cache
 
-    def __init__(self, phy_setup: 'PhysicalSetup', cfg: 'ConfigFVM', mesh_setup: 'FVMMesh2D',
+    def __init__(self, phy_setup: 'PhysicalSetup', cfg: 'ConfigFVM', mesh_setup: 'FVMMesh',
                  n_comp: int, bc_tags: dict[int, 'Facet'], device: str = "cpu"):
         self.device = device
         self.cfg = cfg
@@ -261,19 +265,25 @@ class FacetFlux:
         self.n_comp = n_comp
 
         # --- Build device-side mesh ---
-        self.mesh = MeshCache(mesh_setup, n_comp, device)
-        self.n_facets = self.mesh.n_facets
-        self.n_cells = self.mesh.n_cells
-        self.n_facets_bc = self.mesh.n_facets_bc
+        mesh = MeshCache(mesh_setup, n_comp, device)
+        self.mesh = mesh
+        self.dim, self.n_local = mesh.dim, mesh.n_neigh
+        self.n_facets, self.n_facets_bc = mesh.n_facets, mesh.n_facets_bc
+        self.n_cells = mesh.n_cells
 
-        self.slope_limiter = SlopeLimiter(mesh_setup.areas.to(device), cfg)
+        self.slope_limiter = SlopeLimiter(mesh_setup.volumes.to(device), cfg)
 
         # --- Boundary conditions ---
         self._init_bc(bc_tags)
         c_print('_init_bc done', color="magenta")
 
         # --- Build sparse face-gradient operators ---
-        self.mesh.build_spm_face_grads(self.n_comp, self.dirich_mask, self.neumann_mask, self.dirich_val, self.neumann_val)
+        mesh.build_spm_face_grads(self.n_comp, self.dirich_mask, self.neumann_mask, self.dirich_val, self.neumann_val)
+
+        # Decide which components gradients are needed:
+        # Vx, Vy, (Vz), rho, T
+        self.grad_comps = list(range(self.dim)) + [self.dim+1]
+
         c_print('Complete init FVMEdgeInfo', color="magenta")
 
     def clear_temp(self):
@@ -285,7 +295,6 @@ class FacetFlux:
 
     def _init_bc(self, bc_tags: dict[int, Facet]):
         mesh = self.mesh
-        self.n_facets_bc = mesh.bc_facet_mask.sum().item()
 
         bc_type_str = []
         dirich_mask, neumann_mask = [], []
@@ -309,87 +318,70 @@ class FacetFlux:
         self.neumann_val = neumann_val[self.neumann_mask]
 
         # Farfield and inlet boundary conditions
-        farfield_mask = torch.tensor(farfield_mask, device=self.device)     # shape = (n_facets_bc)
-        use_farfield = torch.any(farfield_mask).item()
-
-        inlet_mask = torch.tensor(inlet_mask, device=self.device)     # shape = (n_facets_bc)
-        use_inlet = torch.any(inlet_mask).item()
+        self.farfield_mask = torch.tensor(farfield_mask, device=self.device)     # shape = (n_facets_bc)
+        self.inlet_mask = torch.tensor(inlet_mask, device=self.device)     # shape = (n_facets_bc)
 
         assert self.dirich_mask.shape[0] == mesh.bc_facet_mask.sum(), f'Wrong mask shape'
         assert self.neumann_mask.shape[0] == mesh.bc_facet_mask.sum(), f'Wrong mask shape'
-        assert farfield_mask.shape[0] == mesh.bc_facet_mask.sum(), f'Wrong mask shape'
-        assert inlet_mask.shape[0] == mesh.bc_facet_mask.sum(), f'Wrong mask shape'
+        assert self.farfield_mask.shape[0] == mesh.bc_facet_mask.sum(), f'Wrong mask shape'
+        assert self.inlet_mask.shape[0] == mesh.bc_facet_mask.sum(), f'Wrong mask shape'
 
         self.boundary_setter = BoundarySetter(self, self.phy_setup)
-        if use_farfield:
-            exit_cell2facet = mesh.facet_to_cell_bc[farfield_mask]
-            # Normal for farfield facets, pointing outward always
-            ff_facet_sign = 2 * (mesh.bc_facet_side[farfield_mask] - 0.5)
-            ff_facet_normals = mesh.normals_hat.squeeze()[mesh.bc_facet_mask][farfield_mask]
-            ff_facet_normals = ff_facet_normals * ff_facet_sign.unsqueeze(-1)
-            self.boundary_setter.add_bc(self.cfg, self.cfg.exit_cfg, farfield_mask, exit_cell2facet, ff_facet_normals)
-        if use_inlet:
-            inlet_cell2facet = mesh.facet_to_cell_bc[inlet_mask]
-            # Directed normal for inlet facets. Points outward always
-            inlet_facet_sign = 2 * (mesh.bc_facet_side[inlet_mask] - 0.5)
-            inlet_facet_normals = mesh.normals_hat.squeeze()[mesh.bc_facet_mask][inlet_mask]
-            inlet_facet_normals = inlet_facet_normals * inlet_facet_sign.unsqueeze(-1)
-            self.boundary_setter.add_bc(self.cfg, self.cfg.inlet_cfg, inlet_mask, inlet_cell2facet, inlet_facet_normals)
 
     def compute_facet(self, Us):
         """ Precompute shared values that are used multiple times later.
             Us.shape = [n_cells, n_component] """
         mesh = self.mesh
 
-        U_facet_bc = self.boundary_setter.set_face_values(Us, self.cell_grads) #self._bc_face_vals(Us, dt)      # shape = [n_facets_bc, n_comp]
+        U_facet_bc = self.boundary_setter.set_face_values(Us, self.cell_grads)      # shape = [n_facets_bc, n_comp]
         Us_cell_facet = torch.cat([Us, U_facet_bc])        # shape = [n_cells + n_facets_bc, n_comp]
         cell_grads = self._cell_grads(Us_cell_facet) # shape = [n_cells, 2, n_comp]
 
         # Compute limited face values,
         Us_face, phi_lim = self._limit_face_vals(Us, Us_cell_facet, cell_grads)   # Us_face.shape = [n_cells, 3, n_comp], phi_lim.shape =  [n_cells, 1, n_comp]
-        Us_face = Us_face.view(3 * self.n_cells, self.n_comp)
+        Us_face = Us_face.view(self.n_local * self.n_cells, self.n_comp)
         cell_grads = cell_grads * phi_lim
         self.cell_grads = cell_grads    # Save for boundary conditions
 
         # Face and cell gradients of velocity and temperature
-        grad_F = cell_grads[:, :, [0, 1, 3]].reshape(self.n_cells, 6)      # shape = [n_cells, {dx, dy} * {vx, vy, T}]
+        grad_F = cell_grads[:, :, self.grad_comps].reshape(self.n_cells, 6)      # shape = [n_cells, {dx, dy} * {vx, vy, T}]
         # grad_F_flat = torch.repeat_interleave(grad_F, 3, dim=0, output_size=3*self.n_cells) # [dvx/dx, dvy/dx, dvx/dy, dvy/dy, dT/dx, dT/dy]
         grad_F_flat = grad_F[:, None, :].expand(-1, 3, -1).reshape(-1, 6) # [dvx/dx, dvy/dx, dvx/dy, dvy/dy, dT/dx, dT/dy]
         grad_F_bc = grad_F[mesh.facet_to_cell_bc]
 
-        # Prepare projection from cell to facets - (slow step so vectorise over all components)
-        cell_values = torch.cat([Us_face, grad_F_flat], dim=-1)        # shape = [3*n_cells, n_comp+6]
-        cell_values_bc = torch.cat([U_facet_bc, grad_F_bc], dim=1)      # shape = [n_facets_bc, n_comp+6]
+        # Prepare projection from cell to facets - (slow step so vectorize over all components)
+        cell_values = torch.cat([Us_face, grad_F_flat], dim=-1)                 # shape = [3*n_cells, n_comp+6]
+        cell_values_bc = torch.cat([U_facet_bc, grad_F_bc], dim=1)              # shape = [n_facets_bc, n_comp+6]
 
         # Project to left and right face values
-        U_face_all = torch.empty((self.n_facets, 2, self.n_comp + 6), device=self.device) #self.U_face_all                                    # shape = [n_facets, 2, n_comp+6]
+        U_face_all = torch.empty((self.n_facets, 2, self.n_comp + 6), device=self.device)  # shape = [n_facets, 2, n_comp+6]
         U_face_all[mesh.cell_to_facet, mesh.cell_facet_signs] = cell_values
         U_face_all[mesh.bc_locations, mesh.bc_facet_side] = cell_values_bc
 
         # Decompose components back
-        self.Vs_facet = U_face_all[:, :, :2].contiguous()                   # shape = [n_facets, facets=2, n_comp=2]
-        self.rho_facet = U_face_all[:, :, 2].unsqueeze(-1).contiguous()     # shape = [n_facets, facets=2, dims=1]
-        self.T_facet = U_face_all[:, :, 3].unsqueeze(-1).contiguous()       # shape = [n_facets, facets=2, dims=1]
+        self.Vs_facet = U_face_all[:, :, :self.dim].contiguous()                   # shape = [n_facets, facets=2, n_comp=2]
+        self.rho_facet = U_face_all[:, :, self.dim].unsqueeze(-1).contiguous()     # shape = [n_facets, facets=2, dims=1]
+        self.T_facet = U_face_all[:, :, self.dim+1].unsqueeze(-1).contiguous()     # shape = [n_facets, facets=2, dims=1]
 
         # Conserved quantities
         self.mom_facet, _, self.Q_facet = self.phy_setup.primatives_to_state(self.Vs_facet, self.rho_facet, self.T_facet)
         self.phi = (self.Vs_facet * mesh.normals.unsqueeze(1)).sum(dim=-1) # shape = [n_facets, facets=2, ]
 
         # Compute gradient on facet and select wanted components
-        grad_faces_n = self._face_grads(Us)        # shape = [n_faces, n_comp]
-        grad_F_dn = grad_faces_n[:, [0, 1, 3]]   # shape = [n_faces, 3]
+        grad_faces_n = self._face_grads(Us)                             # shape = [n_faces, n_comp]
+        grad_F_dn = grad_faces_n[:, self.grad_comps]                    # shape = [n_faces, 3]
 
         # Non-orthogonal correction for facet gradient: n . grad(U)_f = C du + (n - C d) . grad(U)_f
         # Get relevant interpolated gradient. Average over both sides of facet.
-        grad_F_lstsq = U_face_all.mean(dim=1)[:, 4:10].reshape(self.n_facets, 2, 3)   # shape = [n_facets, {x, y}, {vx, vy, T}]
+        grad_F_lstsq = U_face_all[:, :, 4:10].mean(dim=1).reshape(self.n_facets, self.dim, self.dim+1)   # shape = [n_facets, {x, y}, {vx, vy, T}]
         # Remove parallel part of gradient
         dFdn_correct = grad_F_dn - (grad_F_lstsq * mesh.X_orthog).sum(dim=1)      # shape = [n_facets, 3]
         # Replace normal part of gradient with facet gradient
         grad_F_dot_n = (grad_F_lstsq * mesh.normals_hat).sum(dim=1, keepdim=True)       # shape = [n_facets, 1, 3]
         grad_F = grad_F_lstsq + (dFdn_correct.unsqueeze(1) - grad_F_dot_n) * mesh.normals_hat            # [n_facets, 2, 3]
 
-        self.grad_V = grad_F[:, :, :2]
-        self.grad_T_n = dFdn_correct[:, 2]      # shape = [n_facets]
+        self.grad_V = grad_F[:, :, :self.dim]
+        self.grad_T_n = dFdn_correct[:, -1]      # shape = [n_facets]
 
     def _limit_face_vals(self, Us, Us_cell_facet, cell_grads):
         """ Limited B-J scheme for cell to face interpolation.
@@ -407,9 +399,9 @@ class FacetFlux:
         U_upper = torch.amax(U_cent_neigh, dim=1, keepdim=True) - U_cent      # shape = [n_cells, 1, n_comp]
         U_lower = torch.amin(U_cent_neigh, dim=1, keepdim=True) - U_cent
 
-        numerator = torch.where(dU > 0, U_upper, U_lower) # shape = [n_cells, neigh=3, n_comp]
+        numerator = torch.where(dU > 0, U_upper, U_lower)           # shape = [n_cells, neigh=3, n_comp]
         phi_lim = self.slope_limiter.limit(numerator, dU)           # shape = [n_cells, neigh=3, n_comp]
-        Us_face = torch.addcmul(U_cent, dU, phi_lim) # U_cent + phi_lim * dU      # shape = [n_cells, neigh=3, n_comp]
+        Us_face = torch.addcmul(U_cent, dU, phi_lim)                # shape = [n_cells, neigh=3, n_comp]
 
         return Us_face, phi_lim
 
@@ -419,9 +411,9 @@ class FacetFlux:
             Us_cell_face.shape = (n_cells+n_facets_bc, N_component)
             Returns: Gradient matrix of shape (n_cells, 2, N_component)
         """
-        # combined_grad = torch.mm(self.mesh.G_mats, Us_cell_face)  # combined_grad.shape == [n_cells*2, N_component]
-        combined_grad = self.mesh.G_mats.spMM(Us_cell_face)  # combined_grad.shape == [n_cells*2, N_component]
-        cell_grads = combined_grad.view(self.n_cells, 2, self.n_comp)    # shape = [n_cells, 2, N_component]
+        # combined_grad = torch.mm(self.mesh.G_mats, Us_cell_face)  # combined_grad.shape == [n_cells*dim, N_component]
+        combined_grad = self.mesh.G_mats.spMM(Us_cell_face)  # combined_grad.shape == [n_cells*dim, N_component]
+        cell_grads = combined_grad.view(self.n_cells, self.dim, self.n_comp)    # shape = [n_cells, dim, N_component]
         return cell_grads
 
     def _face_grads(self, Us):

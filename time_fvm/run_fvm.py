@@ -117,10 +117,10 @@ def main():
     np.random.seed(1)
     torch.manual_seed(1)
 
-    new_mesh = True
+    new_mesh = False
 
     cfg: ConfigFVM = ConfigEllipse()
-    phy_setup = PhysicalSetup(cfg)
+    phy_setup = PhysicalSetup(cfg, dim=2)
 
     if new_mesh:
         c_print(f'Generating new mesh...', "green")
@@ -134,8 +134,9 @@ def main():
         mesh: FVMMesh2D = save_dict['mesh']
         edge_tag = save_dict['edge_tag']
         bound_edgs = save_dict['bound_edgs']
+        c_print(f'Loaded mesh. {mesh.n_cells = }, {mesh.n_facets = }', "green")
 
-    print(f'{mesh.areas.min() = }')
+    print(f'{mesh.volumes.min() = }')
 
     # Set up initial conditions.
     if cfg.problem_setup == "ellipse":

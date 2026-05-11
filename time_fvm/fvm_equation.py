@@ -1,23 +1,28 @@
+from typing import TYPE_CHECKING
 import torch
 from abc import ABC
 from cprint import c_print
 
 from time_fvm.utils.plotting import plot_points, plot_interp_cell, plot_edges
-from time_fvm.mesh_utils.fvm_mesh import FVMMesh2D
 from time_fvm.fvm_stepping.facet_process import FacetFlux
 from time_fvm.time_solvers.t_solvers import FVMCells
 from time_fvm.time_solvers.integrators import get_solver
-from config_fvm import ConfigFVM
+
+if TYPE_CHECKING:
+    from time_fvm.mesh_utils.fvm_mesh import FVMMesh
+    from config_fvm import ConfigFVM
 
 
 class PhysicalSetup:
     """ Set physical properties of fluid. """
+    dim: int
     tau: torch.Tensor       # shape = [n_edges, 2, 2]
     P_face: torch.Tensor    # shape = [n_edges, 2, 1]
     c: torch.Tensor         # shape = [n_edges, 2, 1]
 
-    def __init__(self, cfg: ConfigFVM):
+    def __init__(self, cfg: ConfigFVM, dim: int):
         self.device = cfg.device
+        self.dim = dim
 
         self.T_0 = cfg.T_0
         self.mu = cfg.viscosity
@@ -29,7 +34,8 @@ class PhysicalSetup:
 
     def state_to_primative(self, state: torch.Tensor):
         """ Convert from conserved quantities (momentum, rho, energy) to primitives (velocity, rho, T) """
-        momentum, rho, Q = state[:, :2], state[:, 2:3], state[:, 3:4]
+        d = self.dim
+        momentum, rho, Q = state[:, :d], state[:, d:d+1], state[:, d+1:d+2]
 
         V = momentum / rho
         T = 1 / self.C_v * (Q / rho - 0.5 * V.square().sum(dim=1, keepdim=True))
@@ -39,7 +45,7 @@ class PhysicalSetup:
 
     def primatives_to_state(self, V, rho, T):
         """ Convert from primitives (velocity, rho, T) to conserved quantities (momentum, rho, energy)
-            V.shape = [..., 2]
+            V.shape = [..., dim]
             rho.shape = [..., 1]
             T.shape = [..., 1]
          """
@@ -101,12 +107,6 @@ class PhysicalSetup:
     def eos_P(self, rho, T):
         """ Pressure EOS """
         return self.R * rho * T
-
-    def eos_cP(self, rho, T):
-        """ From rho and T, get c and P. Combine eos_c and eos_P """
-        c = torch.sqrt(self.gamma * self.R * T)
-        P = self.R * rho * T
-        return c, P
 
     def eos_T(self, rho, P):
         """ Inverse of eos_P """
@@ -214,7 +214,7 @@ class Heating(FVMEdgeFunc):
         """
         grad_T_n = E_props.grad_T_n     # shape = [n_facets]
         # heating -= self.kappa * grad_T_n * mesh.edge_len.squeeze()
-        heating.addcmul_(grad_T_n, mesh.edge_len.squeeze(), value=-self.kappa)
+        heating.addcmul_(grad_T_n, mesh.facet_size.squeeze(), value=-self.kappa)
 
         if fluxes is None:
             fluxes = torch.zeros(self.E_props.n_facets, self.E_props.n_comp, device=self.device)
@@ -268,7 +268,7 @@ class KTDiffusion(FVMEdgeFunc):
         Vs_face = E_props.Vs_facet      # shape = [n_edges, edges=2, n_comp=2]
         Q_face = E_props.Q_facet   # shape = [n_edges, edges=2, n_comp=1]
         mom_face = E_props.mom_facet
-        edge_len = E_props.mesh.edge_len
+        edge_len = E_props.mesh.facet_size
 
         # Us = torch.cat([mom_face, rho_face, Q_face], dim=2)  # shape = [n_edges, 2, n_comp]
 
@@ -299,13 +299,13 @@ class KTDiffusion(FVMEdgeFunc):
 
 
 class FVMEquation:
-    mesh: FVMMesh2D
+    mesh: FVMMesh
     E_props: FacetFlux
     edges: FVMEdgeFunc
     cells: FVMCells
     n_comp: int
 
-    def __init__(self, cfg: ConfigFVM, phy_setup: PhysicalSetup, mesh: FVMMesh2D, n_comp, bc_tag, us_init=None):
+    def __init__(self, cfg: ConfigFVM, phy_setup: PhysicalSetup, mesh: FVMMesh, n_comp, bc_tag, us_init=None):
         self.cfg = cfg
         self.phy_setup = phy_setup
         self.device = cfg.device
@@ -336,7 +336,7 @@ class FVMEquation:
         self.t_solver.solve()
 
     def forward(self, primatives):
-        """ primatives.shape = (n_cells, n_component) """
+        """ primatives.shape = (n_cells, n_comp) """
         E_props = self.E_props
         E_props.compute_facet(primatives)
 
@@ -363,7 +363,6 @@ class FVMEquation:
 
             du/dt = -div(flux) = -sum_i (sign_i * flux_i)
         """
-        # divergence = torch.mm(self.flux_mat, fluxes)  # shape: (n_cells * n_component,)
         divergence = self.flux_mat.spMM(fluxes)  # shape: (n_cells * n_component,)
         return divergence
 
