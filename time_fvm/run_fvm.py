@@ -117,7 +117,7 @@ def main():
     np.random.seed(1)
     torch.manual_seed(1)
 
-    new_mesh = True
+    new_mesh = False
 
     cfg: ConfigFVM = ConfigEllipse()
     phy_setup = PhysicalSetup(cfg, dim=2)

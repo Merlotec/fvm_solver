@@ -285,10 +285,6 @@ class FacetFlux:
         self.grad_comps = list(range(self.dim)) + [self.dim+1]
 
         c_print('Complete init FVMEdgeInfo', color="magenta")
-        self.facet_ids = torch.cat([
-            mesh.cell_to_facet.reshape(-1),
-            mesh.bc_locations.reshape(-1),
-        ], dim=0)
 
     def clear_temp(self):
         self.mesh.clear_temp()
