@@ -100,7 +100,7 @@ class ConfigEllipse(ConfigFVM):
 
     # Save configuration
     plot_t: float = 0.025   # Time interval between plots
-    save_t: float = 0.5    # Time interval between saves
+    save_t: float = 0.05    # Time interval between saves
     print_i: int = 500   # Iterations between print statements
     end_t: float = 20       # Max simulation time.
 
