@@ -7,7 +7,7 @@ from base_cfg import ARTEFACT_DIR
 from time_fvm.mesh_utils.mesh_store import FacetBCTypes as E
 from time_fvm.mesh_utils.mesh_store import Facet
 from time_fvm.mesh_utils.fvm_mesh import FVMMesh2D
-from time_fvm.fvm_equation import FVMEquation, PhysicalSetup
+from time_fvm.fvm_equation import FVMEquation, FluidConstitution2D, FluidConstitution
 from time_fvm.config_fvm import ConfigFVM, ConfigNozzle, ConfigEllipse
 
 
@@ -34,7 +34,7 @@ def generate_mesh(cfg: ConfigFVM):
     return Xs, tri_idx, all_edgs, bc_edge_mask, edge_tag, bound_edgs
 
 
-def init_conds_nozzle(mesh: FVMMesh2D, edge_tag, bound_edgs, phy_setup: PhysicalSetup, cfg: ConfigNozzle):
+def init_conds_nozzle(mesh: FVMMesh2D, edge_tag, bound_edgs, phy_setup: FluidConstitution, cfg: ConfigNozzle):
     # Initial conditions based on inlet inside engine, outlet outside.
     inlet_cfg = cfg.inlet_cfg
     T_in = inlet_cfg.T_inf
@@ -76,7 +76,7 @@ def init_conds_nozzle(mesh: FVMMesh2D, edge_tag, bound_edgs, phy_setup: Physical
     return bc_tags, Us_init
 
 
-def init_conds_ellipses(mesh: FVMMesh2D, edge_tag, bound_edgs, phy_setup: PhysicalSetup, cfg: ConfigEllipse):
+def init_conds_ellipses(mesh: FVMMesh2D, edge_tag, bound_edgs, phy_setup: FluidConstitution, cfg: ConfigEllipse):
     # Set initial conditions same as inlet
     inlet_cfg = cfg.inlet_cfg
     v_in = inlet_cfg.v_n_inf
@@ -120,7 +120,7 @@ def main():
     new_mesh = False
 
     cfg: ConfigFVM = ConfigEllipse()
-    phy_setup = PhysicalSetup(cfg, dim=2)
+    phy_setup = FluidConstitution2D(cfg, dim=2)
 
     if new_mesh:
         c_print(f'Generating new mesh...', "green")

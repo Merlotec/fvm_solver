@@ -2,17 +2,17 @@ import torch
 from cprint import c_print
 
 
-def build_sparse_gradient_matrix(combined_neigh, G_mat, dim, n_cells, n_boundaries):
+def build_sparse_gradient_matrix(combined_neigh: torch.Tensor, G_mat: torch.Tensor, dim, n_cells, n_boundaries):
     """
     Build a sparse gradient matrix for one spatial dimension using both cell neighbors and boundary facets.
 
     Args:
-        combined_neigh Tensor: For each cell i, a 1D tensor of neighbor cell indices.
-        G_mat (Tensor): For each cell i, a 2D tensor of shape [dim, num_total_neighbors_i].
+        combined_neigh: For each cell i, a 1D tensor of neighbor cell indices.
+        G_mat: For each cell i, a 2D tensor of shape [dim, num_total_neighbors_i].
                               The first columns correspond to cell neighbors and the remaining columns to facets.
-        dim (int): The spatial dimension (0 for x, 1 for y) to build the gradient matrix.
-        n_cells (int): Total number of cells.
-        n_boundaries (int): Total number of boundary facets.
+        dim: The spatial dimension (0 for x, 1 for y) to build the gradient matrix.
+        n_cells: Total number of cells.
+        n_boundaries: Total number of boundary facets.
 
     Returns:
         A (torch.sparse.FloatTensor): A sparse matrix of shape [n_cells, n_cells+n_boundaries] that computes
@@ -64,7 +64,7 @@ class FVMMesh:
 
     # Only for interior facet
     cell_grad_stuff: tuple # Stuff needed to calculate gradient on a cell
-    facet_to_cell_main: torch.Tensor # shape = (n_facet_main, 2)              # Mapping facet to cell indices for non-boundary facet
+    facet_to_cell_main: torch.Tensor # shape = (n_facet_main, 2)         Mapping facet to cell indices for non-boundary facet
     cent_to_facet_disp: torch.Tensor    # shape = (n_cells, n_facets_per_cell, dim)
 
     # Boundary

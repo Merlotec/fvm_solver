@@ -7,7 +7,7 @@ from time_fvm.utils.sparse import to_sparse, SPM
 if TYPE_CHECKING:
     from torch import Tensor
     from time_fvm.fvm_stepping.facet_process import FacetCalc
-    from time_fvm.fvm_equation import PhysicalSetup
+    from time_fvm.fvm_equation import FluidConstitution
 
 
 class BoundarySetter:
@@ -28,7 +28,7 @@ class BoundarySetter:
     # Merged BC groups, one per unique BCMode
     bc_groups: dict  # {BCMode: (BC, cell_indices: Tensor)}
 
-    def __init__(self, E_props: FacetCalc, phy_setup: PhysicalSetup):
+    def __init__(self, E_props: FacetCalc, phy_setup: FluidConstitution):
         self.device = E_props.device
         self.phy_setup = phy_setup
 
@@ -285,7 +285,7 @@ class BC:
     v_n_inf: Tensor         # shape = [n_bc]
     v_t_inf: Tensor         # shape = [n_bc, dim]
 
-    def __init__(self, phy_setup: PhysicalSetup, cfg: ConfigFVM, mode: BCMode,
+    def __init__(self, phy_setup: FluidConstitution, cfg: ConfigFVM, mode: BCMode,
                  specs: list, n_facets_bc: int):
         """
         Build a merged BC from multiple same-mode boundary regions.

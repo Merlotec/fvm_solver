@@ -7,7 +7,6 @@ Demonstrates the pipeline:
 import numpy as np
 import pyvista as pv
 from mesh_gen.mesh_3d.meshes_fvm import gen_mesh_cube_sphere
-from mesh_gen.mesh_3d.utils import plot_interactive
 
 
 def build_pyvista_grid(points, tetra):
@@ -29,23 +28,30 @@ def tet_volumes(points, tetra):
 
 def cube_sphere_example():
     """Box domain with a spherical hole at the centre."""
+    from collections import Counter
+
     print("=== Cube-with-sphere-hole mesh ===")
-    points, tetra, (int_faces, bound_faces), face_tag = gen_mesh_cube_sphere(areas=(0.05, 0.1), cell_lnscale=2.0)
+    points, tetra, (int_faces, bound_faces), face_tag = gen_mesh_cube_sphere(volume=(0.2, 0.2), cell_lnscale=0.5)
     print(f"  Points: {points.shape[0]}, Tets: {tetra.shape[0]}")
     print(f"  Interior faces: {int_faces.shape[0]}, Boundary faces: {bound_faces.shape[0]}")
-    from collections import Counter
     print(f"  Boundary tags: {Counter(face_tag)}")
     grid = build_pyvista_grid(points, tetra)
     grid.cell_data["volume"] = tet_volumes(points, tetra)
-    print(f"  Volume range: [{grid.cell_data['volume'].min():.4f}, "
-          f"{grid.cell_data['volume'].max():.4f}]")
+    print(f"  Volume range: [{grid.cell_data['volume'].min():.2g}, "
+          f"{grid.cell_data['volume'].max():.2g}]")
     return grid
 
 
 def main():
+    from mesh_gen.mesh_3d.utils import plot_interactive, plot_clip, plot_interp
+
     grid_cube_sphere = cube_sphere_example()
 
     print("\nOpening interactive viewer (cube + sphere hole) ...")
+    # plot_interp(grid_cube_sphere)
+    #
+    # plot_clip(grid_cube_sphere)
+    #
     plot_interactive(grid_cube_sphere)
 
 

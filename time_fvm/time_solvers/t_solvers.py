@@ -7,14 +7,14 @@ import time
 
 from time_fvm.ds_saving.saving import Saver
 if TYPE_CHECKING:
-    from time_fvm.fvm_equation import FVMEquation, PhysicalSetup
+    from time_fvm.fvm_equation import FVMEquation, FluidConstitution
     from time_fvm.config_fvm import ConfigFVM
 
 
 class FVMCells:
     state: torch.Tensor  # shape = (n_cells, N_component)
     """ State stored as: [momentum_x, momenum_y, density, energy] """
-    def __init__(self, n_cells, n_comp, phys_setup: PhysicalSetup, init_val=None, device="cpu"):
+    def __init__(self, n_cells, n_comp, phys_setup: FluidConstitution, init_val=None, device="cpu"):
         self.device = device
         self.phys_setup = phys_setup
 
@@ -87,10 +87,10 @@ class TSolver(ABC):
             self._solve_step(t)
             dts.append(self.dt)
 
+            # Printing, Plotting and Saving
             if i % self.print_i == 0:
                 irl_time = (time.time() - st_time)/self.print_i
                 avg_dt = sum(dts[-self.print_i:]) / len(dts[-self.print_i:])
-                avg_dt = avg_dt.item()
                 c_print(f'{i = }, {t = :.4g}, {avg_dt = :.3g}, {irl_time = :.3g}', color="bright_green")
                 st_time = time.time()
 
@@ -107,23 +107,13 @@ class TSolver(ABC):
 
                 if torch.any(torch.isnan(primatives)):
                     print("Nan in primatives")
-                    exit(9)
+                    raise ValueError("Nan detected in primatives")
 
             if t >= next_save_t:
                 next_save_t = t + self.save_t
                 c_print(f'Saving at t={t:.5g}', color="bright_cyan")
                 primatives = self.cells.get_values()[0]
                 self.saver.save(t, self.eq.E_props, primatives)
-
-        dts = torch.stack(dts).cpu()
-        kernel_size = 10
-        kernel = torch.ones(1, 1, kernel_size) / kernel_size
-        dts_smooth = torch.nn.functional.conv1d(dts.unsqueeze(0).unsqueeze(0), kernel, padding="valid")[0][0]
-        print(f'{dts[500:].mean() = }')
-        plt.plot(dts)
-        plt.plot(dts_smooth)
-        plt.show()
-
 
     @torch.inference_mode()
     def solve(self):
@@ -139,26 +129,15 @@ class TSolver(ABC):
 
     def _solve_profile(self):
         import torch.profiler
-
+        # warmup
         for i in range(10):
             t = i * self.dt
             self._solve_step(t)
 
         with torch.profiler.profile(
-                activities=[
-                    torch.profiler.ProfilerActivity.CPU,
-                    torch.profiler.ProfilerActivity.CUDA,
-                ],
-                # schedule=torch.profiler.schedule(
-                #     warmup=1,  # Skip the first iteration (warm-up)
-                #     wait=1,  # Skip the first iteration (warm-up)
-                #     active=3  # Capture the next 3 iterations
-                # ),
-                # on_trace_ready=torch.profiler.tensorboard_trace_handler('./log'),
-                record_shapes=True,  # Records tensor shapes for each op
-                with_stack=True,
+                activities=[torch.profiler.ProfilerActivity.CPU, torch.profiler.ProfilerActivity.CUDA],
+                record_shapes=True, with_stack=True,
         ) as prof:
-
             for i in range(10):
                 t = i * self.dt
                 prof.step()

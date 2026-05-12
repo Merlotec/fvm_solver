@@ -7,8 +7,8 @@ from time_fvm.utils.sparse import combine_facet_operators, lift_sparse_matrix, i
 from time_fvm.fvm_stepping.facet_boundary import BoundarySetter
 from time_fvm.fvm_stepping.limiter import SlopeLimiter
 if TYPE_CHECKING:
-    from time_fvm.fvm_equation import PhysicalSetup
-    from time_fvm.mesh_utils.fvm_mesh import FVMMesh2D, FVMMesh
+    from time_fvm.fvm_equation import FluidConstitution
+    from time_fvm.mesh_utils.fvm_mesh import FVMMesh
     from time_fvm.config_fvm import ConfigFVM
 
 
@@ -19,7 +19,7 @@ class MeshCache:
         midpoints, volumes, etc.) via mesh.fvm_mesh.xxx for consumers like saving.py.
     """
     device: str
-    fvm_mesh: 'FVMMesh'
+    fvm_mesh: FVMMesh
 
     # Dimensions
     dim: int
@@ -29,28 +29,28 @@ class MeshCache:
     n_facets_bc: int
 
     # General tensors
-    normals: torch.Tensor           # (n_facets, dim)
-    facet_size: torch.Tensor          # (n_facets, 1)
-    normals_hat: torch.Tensor       # (n_facets, dim, 1)
-    X_orthog: torch.Tensor          # (n_facets, dim, 1)
-    cell_disps: torch.Tensor        # (n_facets, dim)
-    facet_to_cell_main: torch.Tensor  # (n_facets_m, 2)
-    cell_dist_proj: torch.Tensor     # (n_facets_m)
-    cell_facet_signs: torch.Tensor    # (3 * n_cells)  flattened
-    cell_to_facet: torch.Tensor       # (3 * n_cells)  flattened
-    cent_to_facet_disp: torch.Tensor # (n_cells, 3, dim, 1)
+    normals: torch.Tensor               # (n_facets, dim)
+    facet_size: torch.Tensor            # (n_facets, 1)
+    normals_hat: torch.Tensor           # (n_facets, dim, 1)
+    X_orthog: torch.Tensor              # (n_facets, dim, 1)
+    cell_disps: torch.Tensor            # (n_facets, dim)
+    facet_to_cell_main: torch.Tensor    # (n_facets_m, 2)
+    cell_dist_proj: torch.Tensor        # (n_facets_m)
+    cell_facet_signs: torch.Tensor      # (3 * n_cells)  flattened
+    cell_to_facet: torch.Tensor         # (3 * n_cells)  flattened
+    cent_to_facet_disp: torch.Tensor    # (n_cells, 3, dim, 1)
 
     # BC attributes
     bc_facet_mask: torch.Tensor     # (n_facets)
     bc_locations: torch.Tensor      # (n_facets_bc)
     bc_facet_side: torch.Tensor     # (n_facets_bc)
-    facet_to_cell_bc: torch.Tensor   # (n_facets_bc)
+    facet_to_cell_bc: torch.Tensor  # (n_facets_bc)
     facet_dists_bc: torch.Tensor    # (n_facets_bc, n_comp)
 
     # Calculations
-    G_mats: SPM            # sparse SPM (dim*n_cells, n_cells + n_facets_bc)
+    G_mats: SPM                     # sparse SPM (dim*n_cells, n_cells + n_facets_bc)
     neigh_combine: torch.Tensor     # (n_cells, 2)
-    A_face_grad: SPM       # sparse SPM (n_facets*n_comp, n_cells*n_comp)
+    A_face_grad: SPM                # sparse SPM (n_facets*n_comp, n_cells*n_comp)
     b_face_grad: torch.Tensor       # (n_facets*n_comp,)
     flux_mat: SPM                   # (n_cells, n_facets)
 
@@ -255,10 +255,10 @@ class FacetCalc:
     Q_facet: torch.Tensor           # shape = (n_facets, 2, 1)
     phi: torch.Tensor
     cell_grads: torch.Tensor = None
-    U_face_all: torch.Tensor = None     # Pre allocated cache
+    U_face_all: torch.Tensor = None     # Pre-allocated cache
 
-    def __init__(self, phy_setup: 'PhysicalSetup', cfg: 'ConfigFVM', mesh_setup: 'FVMMesh',
-                 n_comp: int, bc_tags: dict[int, 'Facet'], device: str = "cpu"):
+    def __init__(self, phy_setup: FluidConstitution, cfg: ConfigFVM, mesh_setup: FVMMesh,
+                 n_comp: int, bc_tags: dict[int, Facet], device: str = "cpu"):
         self.device = device
         self.cfg = cfg
         self.phy_setup = phy_setup

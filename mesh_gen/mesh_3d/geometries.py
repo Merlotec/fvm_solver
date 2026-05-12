@@ -85,13 +85,16 @@ class Box3D(MeshSurface3D):
 class Sphere3D(MeshSurface3D):
     """Sphere surface, typically used as a hole in the domain."""
 
-    def __init__(self, center, radius, theta_resolution=16, phi_resolution=16,
+    def __init__(self, center, radius, mesh_lnscale=None, theta_resolution=16, phi_resolution=16,
                  hole: bool = True, dist_req: bool = True, name=None):
+        if mesh_lnscale is not None:
+            circumference = np.pi * radius
+            theta_resolution = int(np.ceil(mesh_lnscale * theta_resolution / circumference))
+            phi_resolution = int(np.ceil(mesh_lnscale * phi_resolution / circumference))
+
         surface = pv.Sphere(
-            center=tuple(center),
-            radius=radius,
-            theta_resolution=theta_resolution,
-            phi_resolution=phi_resolution,
+            center=tuple(center), radius=radius,
+            theta_resolution=theta_resolution, phi_resolution=phi_resolution,
         ).triangulate()
 
         if hole:

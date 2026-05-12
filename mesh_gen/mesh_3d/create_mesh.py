@@ -17,8 +17,8 @@ def _build_refinement_bgmesh(merged_surface, dist_req_surfaces, mesh_props):
     """Build a background mesh with per-node ``target_size`` for refinement.
 
     Mirrors the 2D ``refine_fn`` logic:
-      - cells are smallest (``min_area``) near surfaces tagged ``dist_req=True``,
-      - cells grow to ``max_area`` at distance ≥ ``lengthscale``.
+      - cells are smallest (``min_cell``) near surfaces tagged ``dist_req=True``,
+      - cells grow to ``max_cell`` at distance ≥ ``lengthscale``.
 
     Uses each surface's analytical ``distance(points)`` method for accuracy.
     tetgen reads the ``"target_size"`` point-data array and uses it as the
@@ -48,13 +48,12 @@ def _build_refinement_bgmesh(merged_surface, dist_req_surfaces, mesh_props):
 
     # 3. Exponential blend: small cells near surface → large cells far away
     #    (same formula as the 2D refine_fn threshold)
-    h_min = mesh_props.min_area
-    h_max = mesh_props.max_area
+    h_min = mesh_props.min_cell
+    h_max = mesh_props.max_cell
     lengthscale = mesh_props.lengthscale
 
     t = np.clip(dist / lengthscale, 0.0, 1.0)
     sizes = h_min + (h_max - h_min) * t
-
     bgmesh.point_data["target_size"] = sizes
     return bgmesh
 
@@ -144,17 +143,17 @@ def _build_switches(mesh_props: MeshProps, quality_kwargs: dict) -> str:
 
     Uses the -a switch for maximum volume constraint (controls cell size).
     """
-    max_vol = mesh_props.max_area * 2.0  # approximate tetra volume from target area
+    max_vol = mesh_props.max_cell * 2.0  # approximate tetra volume from target area
 
     # Start with quality mesh generation
-    switches = "pq"
+    switches = "p"
 
     # Volume constraint
-    switches += f"a{max_vol:.6f}"
+    # switches += f"a0.01"
 
     # Quality parameters
     if "mindihedral" in quality_kwargs:
-        switches += f"q{quality_kwargs['mindihedral']/10:.1f}"
+        switches += f"q{quality_kwargs["minratio"]:.1f}/{quality_kwargs['mindihedral']:.1f}"
 
     return switches
 
@@ -173,7 +172,7 @@ def create_mesh_3d(coords: list, mesh_props: MeshProps, quality_kwargs=None):
 
     Args:
         coords: list of MeshSurface3D objects defining the domain.
-        mesh_props: MeshProps with min_area, max_area, lengthscale.
+        mesh_props: MeshProps with min_size, max_size, lengthscale.
         quality_kwargs: dict passed to tetgen.tetrahedralize()
                         (e.g. dict(order=1, mindihedral=30, minratio=1.5)).
 
@@ -186,17 +185,15 @@ def create_mesh_3d(coords: list, mesh_props: MeshProps, quality_kwargs=None):
         marker_names: dict mapping marker_id → name.
     """
     if quality_kwargs is None:
-        quality_kwargs = dict(order=1, mindihedral=30, minratio=1.5)
+        quality_kwargs = dict(order=1, mindihedral=20, minratio=1, epsilon=1e-4)
+        # quality_kwargs = dict(order=1)
 
     # ------------------------------------------------------------------
     # 1. Assign markers and merge surfaces
     # ------------------------------------------------------------------
-    surfaces = []
-    dist_req_surfaces = []
-    holes = []
+    surfaces, dist_req_surfaces, holes = [], [], []
     marker_names = {0: "Normal"}
-    all_surface_centers = []
-    all_surface_markers = []
+    all_surface_centers, all_surface_markers = [], []
 
     for i, facet in enumerate(coords):
         if facet.real_face:
@@ -252,10 +249,13 @@ def create_mesh_3d(coords: list, mesh_props: MeshProps, quality_kwargs=None):
     # Suppress C-level stdout from tetgen
     stdout_fd = os.dup(1)
     try:
-        # with open(os.devnull, "w") as devnull:
-        #     os.dup2(devnull.fileno(), 1)
         switches = _build_switches(mesh_props, quality_kwargs)
-        tet.tetrahedralize(switches=switches, bgmesh=bgmesh, **quality_kwargs)
+        print(f'{switches = }')
+        with open(os.devnull, "w") as devnull:
+            os.dup2(devnull.fileno(), 1)
+            # tet.tetrahedralize(switches=switches, bgmesh=bgmesh)
+            tet.tetrahedralize(bgmesh=bgmesh, **quality_kwargs)
+
     finally:
         os.dup2(stdout_fd, 1)
         os.close(stdout_fd)

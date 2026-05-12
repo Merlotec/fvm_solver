@@ -7,7 +7,7 @@ from base_cfg import ARTEFACT_DIR
 from time_fvm.mesh_utils.mesh_store import FacetBCTypes as E
 from time_fvm.mesh_utils.mesh_store import Facet
 from time_fvm.mesh_utils.fvm_mesh import FVMMesh3D
-from time_fvm.fvm_equation import FVMEquation, PhysicalSetup
+from time_fvm.fvm_equation import FVMEquation, FluidConstitution3D, FluidConstitution
 from time_fvm.config_fvm import ConfigFVM
 from time_fvm.config_fvm_3d import ConfigEllipse
 
@@ -20,7 +20,7 @@ def generate_mesh(cfg: ConfigFVM):
     #     mesh_stuff = gen_rand_mesh(areas=[cfg.min_A, cfg.max_A], cell_lnscale=cfg.lnscale)
     # else:
     #     raise ValueError(f'Unknown mode {cfg.problem_setup}')
-    mesh_stuff = gen_mesh_cube_sphere(areas=[0.05, 0.1], cell_lnscale=cfg.lnscale)
+    mesh_stuff = gen_mesh_cube_sphere(volume=[0.05, 0.1], cell_lnscale=cfg.lnscale)
     Xs, tet_idx, (int_edgs, bound_facet), facet_tag = mesh_stuff
 
     Xs = torch.from_numpy(Xs).float()
@@ -35,7 +35,7 @@ def generate_mesh(cfg: ConfigFVM):
     return Xs, tet_idx, all_facet, bc_facet_mask, facet_tag, bound_facet
 
 
-def init_conds_3D(mesh: FVMMesh3D, edge_tag, bound_edgs, phy_setup: PhysicalSetup, cfg: ConfigEllipse):
+def init_conds_3D(mesh: FVMMesh3D, edge_tag, bound_edgs, phy_setup: FluidConstitution, cfg: ConfigEllipse):
     # Set initial conditions same as inlet
     inlet_cfg = cfg.inlet_cfg
     v_in = inlet_cfg.v_inf[0]
@@ -80,7 +80,7 @@ def main():
     new_mesh = False
 
     cfg: ConfigFVM = ConfigEllipse()
-    phy_setup = PhysicalSetup(cfg, dim=3)
+    phy_setup = FluidConstitution3D(cfg, dim=3)
 
     if new_mesh:
         c_print(f'Generating new mesh...', "green")

@@ -5,11 +5,11 @@ from .geometries import Box3D, Sphere3D, Cylinder3D
 from .create_mesh import create_mesh_3d
 
 
-def gen_mesh_cube_sphere(areas, cell_lnscale=2.0):
+def gen_mesh_cube_sphere(volume, cell_lnscale=2.0):
     """Generate a 3D mesh: unit cube with a spherical hole at the center.
 
     Args:
-        areas: (min_area, max_area) tuple controlling cell sizes.
+        volume: (min_vol, max_vol) tuple controlling cell sizes.
         cell_lnscale: lengthscale controlling refinement transition zone width.
 
     Returns:
@@ -22,8 +22,11 @@ def gen_mesh_cube_sphere(areas, cell_lnscale=2.0):
     hole_radius = 0.45
     hole_center = np.array([0.0, 0.0, 0.0])
 
-    min_area, max_area = areas
-    mesh_props = MeshProps(min_area, max_area, lengthscale=cell_lnscale)
+
+    min_vol, max_vol = volume
+    mesh_lnscale = min_vol**(1/3)
+
+    mesh_props = MeshProps(min_vol, max_vol, lengthscale=cell_lnscale)
 
     coords = [
         Box3D(
@@ -34,10 +37,8 @@ def gen_mesh_cube_sphere(areas, cell_lnscale=2.0):
             name="Farfield",
         ),
         Sphere3D(
-            center=hole_center,
-            radius=hole_radius,
-            hole=True,
-            dist_req=True,
+            center=hole_center, radius=hole_radius,
+            hole=True, dist_req=True, mesh_lnscale=mesh_lnscale,
             name="NavierWall",
         ),
     ]
