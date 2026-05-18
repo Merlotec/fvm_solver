@@ -91,31 +91,31 @@ class EllipseInlet(ConfigBC):
 
 @dataclass
 class ConfigEllipse(ConfigFVM):
-    problem_setup = "ellipse"    # {ellipse, nozzle}
+    problem_setup: str | None = "ellipse"
 
     # Temporal solver parameters
-    dt= 1e-4
-    n_iter = 50000     # Max number of iterations
+    dt: float | None        = 1e-4
+    n_iter: int | None      = 50000
 
     # mesh parameters
-    min_A = 0.25e-3
-    max_A = 0.5e-3
-    lnscale = 2
+    min_A: float | None     = 0.25e-3
+    max_A: float | None     = 0.5e-3
+    lnscale: float | None   = 2
 
     # Save configuration
-    plot_t = 0.5   # Time interval between plots
-    save_t = 0.5    # Time interval between saves
-    print_i = 500   # Iterations between print statements
-    end_t = 20       # Max simulation time.
+    plot_t: float | None    = 0.5
+    save_t: float | None    = 0.5
+    print_i: int | None     = 500
+    end_t: float | None     = 20
 
     # Physical parameters
-    T_0 = 100        # Reference temperature
-    viscosity = 1e-3     # At reference temp
-    visc_bulk = 10e-3
-    thermal_cond = 1e-6
-    S_const = 110.4       # Sutherland's constant
-    gamma = 1.2  # Ratio of specific heats
-    C_v = 2     # Specific heat at constant volume
+    T_0: float | None           = 100
+    viscosity: float | None     = 1e-3
+    visc_bulk: float | None     = 10e-3
+    thermal_cond: float | None  = 1e-6
+    S_const: float | None       = 110.4
+    gamma: float | None         = 1.2
+    C_v: float | None           = 2
 
     def __post_init__(self):
         self.exit_cfg = EllipseFarfield()
@@ -146,31 +146,31 @@ class NozzleInlet(ConfigBC):
 
 @dataclass
 class ConfigNozzle(ConfigFVM):
-    problem_setup = "nozzle"
+    problem_setup: str | None = "nozzle"
 
     # Temporal solver parameters
-    dt = 1e-4
-    n_iter = 50000     # Max number of iterations
-
-    # Save configuration
-    plot_t = 0.1   # Time interval between plots
-    save_t = 0.5    # Time interval between saves
-    print_i = 500   # Iterations between print statements
-    end_t = 20       # Max simulation time.
+    dt: float | None        = 1e-4
+    n_iter: int | None      = 50000
 
     # mesh parameters
-    min_A  = 0.5e-3
-    max_A = 1e-3
-    lnscale = 2
+    min_A: float | None     = 0.5e-3
+    max_A: float | None     = 1e-3
+    lnscale: float | None   = 2
+
+    # Save configuration
+    plot_t: float | None    = 0.1
+    save_t: float | None    = 0.5
+    print_i: int | None     = 500
+    end_t: float | None     = 20
 
     # Physical parameters
-    T_0 = 100        # Reference temperature
-    viscosity = 5e-3     # At reference temp
-    visc_bulk = 50e-5
-    thermal_cond = 1e-6
-    S_const = 110.4       # Sutherland's constant
-    gamma = 1.2  # Ratio of specific heats
-    C_v = 2     # Specific heat at constant volume
+    T_0: float | None           = 100
+    viscosity: float | None     = 5e-3
+    visc_bulk: float | None     = 50e-5
+    thermal_cond: float | None  = 1e-6
+    S_const: float | None       = 110.4
+    gamma: float | None         = 1.2
+    C_v: float | None           = 2
 
     def __post_init__(self):
         self.exit_cfg = NozzleFarfield()
