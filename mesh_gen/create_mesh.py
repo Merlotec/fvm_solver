@@ -104,32 +104,21 @@ def _create_mesh_thread(holes, points, p_marks, segments, seg_marks, mesh_props,
 
 
 def safe_run(args):
-    """ Run mesh generation in a separate process to catch crashes/hangs, and repeat if it happens. """
+    """ Run mesh generation in a separate process to catch crashes, and repeat if it happens. """
     while True:
         ctx = mp.get_context("spawn")  # safer / more predictable on many platforms
         out_queue = ctx.Queue()
         p = ctx.Process(target=_create_mesh_thread, args=tuple(args + [out_queue]))
         p.start()
-        try:
-            # Wait up to 10 seconds for a message from the child
-            status, payload = out_queue.get(timeout=60)
-        except queue.Empty:
-            # Child didn't send anything in time (hung or crashed)
-            if p.is_alive():
-                p.terminate()
-            p.join()
-            logging.warning("Mesh generation process timed out.")
+        p.join()  # wait however long the mesh takes
+        if p.exitcode != 0:
+            logging.warning("Mesh generation process crashed (exit code %d), retrying.", p.exitcode)
             continue
+        status, payload = out_queue.get_nowait()
         if status == "error":
             logging.warning("Exception in mesh generation process:\n" + payload[1])
             continue
-        else:
-            mesh_specs = payload
-            p.terminate()
-            p.join()
-            break
-
-    return mesh_specs
+        return payload
 
 
 def create_mesh(coords: list, mesh_props, min_angle=None):
