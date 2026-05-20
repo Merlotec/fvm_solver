@@ -112,7 +112,7 @@ def safe_run(args):
         p.start()
         try:
             # Wait up to 10 seconds for a message from the child
-            status, payload = out_queue.get(timeout=10)
+            status, payload = out_queue.get(timeout=60)
         except queue.Empty:
             # Child didn't send anything in time (hung or crashed)
             if p.is_alive():
