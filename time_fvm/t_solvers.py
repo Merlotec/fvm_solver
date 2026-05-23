@@ -59,6 +59,7 @@ class TSolver(ABC):
         self.device = cfg.device
         self.dt = cfg.dt
         self.n_steps = cfg.n_iter
+        self.end_t   = cfg.end_t
         self.cells = cells
         self.eq = eq
         self.print_i = cfg.print_i
@@ -96,9 +97,18 @@ class TSolver(ABC):
         primatives_init = self.cells.get_values()[0]
         self.saver.save(torch.tensor(0.0, device=self.device), self.eq.E_props, primatives_init)
 
+        if self.n_steps is None and self.end_t is None:
+            raise ValueError("Either n_iter or end_t must be set in ConfigFVM")
+
         st_time = time.time()
         t, dts = 0., []
-        for i in range(self.n_steps):
+        i = 0
+        while True:
+            if self.n_steps is not None and i >= self.n_steps:
+                break
+            if self.end_t is not None and t >= self.end_t:
+                break
+
             # If exact_interval, clamp dt so we land exactly on the next save boundary.
             # After the clamped step, restore dt so the adaptive solver continues normally.
             if self.exact_interval and t + self.dt > next_save_t:
@@ -139,6 +149,8 @@ class TSolver(ABC):
                 c_print(f'saving: t={t:.5g}', color="bright_cyan")
                 primatives = self.cells.get_values()[0]
                 self.saver.save(t, self.eq.E_props, primatives)
+
+            i += 1
 
         dts = torch.stack(dts).cpu()
         print(f'{dts[500:].mean() = }')
