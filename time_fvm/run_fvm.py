@@ -2,12 +2,12 @@ from cprint import c_print
 import torch
 import numpy as np
 
-from mesh_gen.meshes_fvm import gen_mesh_nozzle, gen_rand_mesh
+from mesh_gen.mesh_2d.meshes_fvm import gen_mesh_nozzle, gen_rand_mesh
 from base_cfg import ARTEFACT_DIR
-from time_fvm.fvm_store import EdgeBCTypes as E
-from time_fvm.fvm_store import Edge
-from time_fvm.fvm_mesh import FVMMesh
-from time_fvm.fvm_equation import FVMEquation, PhysicalSetup
+from time_fvm.mesh_utils.mesh_store import FacetBCTypes as E
+from time_fvm.mesh_utils.mesh_store import Facet
+from time_fvm.mesh_utils.fvm_mesh import FVMMesh2D
+from time_fvm.fvm_equation import FVMEquation, FluidConstitution2D, FluidConstitution
 from time_fvm.config_fvm import ConfigFVM, ConfigNozzle, ConfigEllipse
 
 
@@ -34,7 +34,7 @@ def generate_mesh(cfg: ConfigFVM):
     return Xs, tri_idx, all_edgs, bc_edge_mask, edge_tag, bound_edgs
 
 
-def init_conds_nozzle(mesh: FVMMesh, edge_tag, bound_edgs, phy_setup: PhysicalSetup, cfg: ConfigNozzle):
+def init_conds_nozzle(mesh: FVMMesh2D, edge_tag, bound_edgs, phy_setup: FluidConstitution, cfg: ConfigNozzle):
     # Initial conditions based on inlet inside engine, outlet outside.
     inlet_cfg = cfg.inlet_cfg
     T_in = inlet_cfg.T_inf
@@ -48,14 +48,14 @@ def init_conds_nozzle(mesh: FVMMesh, edge_tag, bound_edgs, phy_setup: PhysicalSe
     bc_tags = {}
     for bc_idx, (e_tag, e_vert) in enumerate(zip(edge_tag, bound_edgs, strict=True)):
         if e_tag == "NavierWall":
-            bc_tags[bc_idx] = Edge([E.Dirich, E.Dirich, E.Neuman, E.Neuman], [0., 0, None, None], [None, None, 0, 0])
+            bc_tags[bc_idx] = Facet([E.Dirich, E.Dirich, E.Neuman, E.Neuman], [0., 0, None, None], [None, None, 0, 0])
         elif e_tag == "Side":
-            bc_tags[bc_idx] = Edge([E.Farfield, E.Farfield, E.Farfield, E.Farfield], [None, None, None, None], [None, None, None, None])
+            bc_tags[bc_idx] = Facet([E.Farfield, E.Farfield, E.Farfield, E.Farfield], [None, None, None, None], [None, None, None, None])
         elif e_tag == "Left":
             # bc_tags[bc_idx] = Edge([E.Neuman, E.Dirich, E.Dirich, E.Dirich], [None, 0, rho_in, T_in], [0, None, None, None])
-            bc_tags[bc_idx] = Edge([E.Inlet, E.Inlet, E.Inlet, E.Inlet], [None, None, None, None], [None, None, None, None], tag=e_tag)
+            bc_tags[bc_idx] = Facet([E.Inlet, E.Inlet, E.Inlet, E.Inlet], [None, None, None, None], [None, None, None, None], tag=e_tag)
         elif e_tag == "Right":
-            bc_tags[bc_idx] = Edge([E.Farfield, E.Farfield, E.Farfield, E.Farfield], [None, None, None, None], [None, None, None, None])
+            bc_tags[bc_idx] = Facet([E.Farfield, E.Farfield, E.Farfield, E.Farfield], [None, None, None, None], [None, None, None, None])
         else:
             raise ValueError(f'Unknown edge tag {e_tag}')
 
@@ -76,7 +76,7 @@ def init_conds_nozzle(mesh: FVMMesh, edge_tag, bound_edgs, phy_setup: PhysicalSe
     return bc_tags, Us_init
 
 
-def init_conds_ellipses(mesh: FVMMesh, edge_tag, bound_edgs, phy_setup: PhysicalSetup, cfg: ConfigEllipse):
+def init_conds_ellipses(mesh: FVMMesh2D, edge_tag, bound_edgs, phy_setup: FluidConstitution, cfg: ConfigEllipse):
     # Set initial conditions same as inlet
     inlet_cfg = cfg.inlet_cfg
     v_in = inlet_cfg.v_n_inf
@@ -87,11 +87,11 @@ def init_conds_ellipses(mesh: FVMMesh, edge_tag, bound_edgs, phy_setup: Physical
     bc_tags = {}
     for bc_idx, (e_tag, e_vert) in enumerate(zip(edge_tag, bound_edgs, strict=True)):
         if e_tag == "NavierWall":
-            bc_tags[bc_idx] = Edge([E.Dirich, E.Dirich, E.Neuman, E.Neuman], [0., 0, None, None], [None, None, 0, 0], tag=e_tag)
+            bc_tags[bc_idx] = Facet([E.Dirich, E.Dirich, E.Neuman, E.Neuman], [0., 0, None, None], [None, None, 0, 0], tag=e_tag)
         elif e_tag == "Left":
-            bc_tags[bc_idx] = Edge([E.Inlet, E.Inlet, E.Inlet, E.Inlet], [None, None, None, None], [None, None, None, None], tag=e_tag)
+            bc_tags[bc_idx] = Facet([E.Inlet, E.Inlet, E.Inlet, E.Inlet], [None, None, None, None], [None, None, None, None], tag=e_tag)
         elif e_tag == "Right":
-            bc_tags[bc_idx] = Edge([E.Farfield, E.Farfield, E.Farfield, E.Farfield], [None, None, None, None], [None, None, None, None], tag=e_tag)
+            bc_tags[bc_idx] = Facet([E.Farfield, E.Farfield, E.Farfield, E.Farfield], [None, None, None, None], [None, None, None, None], tag=e_tag)
         else:
             raise ValueError(f'Unknown edge tag {e_tag}')
 
@@ -120,22 +120,23 @@ def main():
     new_mesh = True
 
     cfg: ConfigFVM = ConfigEllipse()
-    phy_setup = PhysicalSetup(cfg)
+    phy_setup = FluidConstitution2D(cfg, dim=2)
 
     if new_mesh:
         c_print(f'Generating new mesh...', "green")
         prob_definition = generate_mesh(cfg)
         Xs, tri_idx, all_edgs, bc_edge_mask, edge_tag, bound_edgs = prob_definition
-        mesh = FVMMesh(Xs, tri_idx, all_edgs, bc_edge_mask, device=cfg.device)
+        mesh = FVMMesh2D(Xs, tri_idx, all_edgs, bc_edge_mask, device=cfg.device)
         pickle.dump({'mesh': mesh, "edge_tag": edge_tag, "bound_edgs": bound_edgs}, open(f"{ARTEFACT_DIR}/fvm_mesh.pkl", "wb"))
     else:
         c_print(f'Loading mesh', "green")
         save_dict = pickle.load(open(f"{ARTEFACT_DIR}/fvm_mesh.pkl", "rb"))
-        mesh: FVMMesh = save_dict['mesh']
+        mesh: FVMMesh2D = save_dict['mesh']
         edge_tag = save_dict['edge_tag']
         bound_edgs = save_dict['bound_edgs']
+        c_print(f'Loaded mesh. {mesh.n_cells = }, {mesh.n_facets = }', "green")
 
-    print(f'{mesh.areas.min() = }')
+    print(f'{mesh.volumes.min() = }')
 
     # Set up initial conditions.
     if cfg.problem_setup == "ellipse":
@@ -150,6 +151,7 @@ def main():
 
 
 if __name__ == "__main__":
+    # PYTHONPATH=/home/maccyz/Documents/FVM_solver:/home/maccyz/Documents/FVM_solver/tetgen:/home/maccyz/Documents/FVM_solver/tetgen/src
     print("Running fvm ")
     print()
     main()

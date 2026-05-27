@@ -9,8 +9,8 @@ from shapely import affinity
 
 @dataclass
 class MeshProps:
-    min_area: float
-    max_area: float
+    min_cell: float
+    max_cell: float
     lengthscale: float
 
 

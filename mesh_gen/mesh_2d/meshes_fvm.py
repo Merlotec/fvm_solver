@@ -1,8 +1,8 @@
-import  numpy as np
+import numpy as np
 
 from mesh_gen.mesh_gen_utils import MeshProps, gen_rand_ellipses
-from mesh_gen.geometries import Line, Ellipse, Nozzle, Circle
-from mesh_gen.create_mesh import create_mesh
+from mesh_gen.mesh_2d.geometries import Line, Ellipse, Nozzle, Circle
+from mesh_gen.mesh_2d.create_mesh import create_mesh
 
 
 def gen_mesh_nozzle(areas, cell_lnscale=2):

@@ -7,7 +7,6 @@ class BCMode(Enum):
     Isentropic = "Isentropic"
     Characteristic = "characteristic"
     Farfield = "Farfield"
-    FarfieldBlended = "Farfield_Blended"
 
 
 class ConfigBC(ABC):
@@ -15,6 +14,7 @@ class ConfigBC(ABC):
     # Farfield physical parameters
     v_n_inf: float
     v_t_inf: float
+    v_inf: tuple[float, ...]         # Use for 3D
     rho_inf: float
     T_inf: float
 

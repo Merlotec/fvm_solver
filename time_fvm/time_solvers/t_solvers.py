@@ -1,35 +1,32 @@
-from __future__ import annotations
+from typing import TYPE_CHECKING
 from cprint import c_print
 import torch
 from abc import ABC, abstractmethod
 from matplotlib import pyplot as plt
 import time
 
-from typing import TYPE_CHECKING
-from time_fvm.ds_generation.saving import Saver
+from time_fvm.ds_saving.saving import Saver
 if TYPE_CHECKING:
-    from time_fvm.fvm_equation import FVMEquation, PhysicalSetup
+    from time_fvm.fvm_equation import FVMEquation, FluidConstitution
     from time_fvm.config_fvm import ConfigFVM
-
 
 
 class FVMCells:
     state: torch.Tensor  # shape = (n_cells, N_component)
     """ State stored as: [momentum_x, momenum_y, density, energy] """
-    def __init__(self, n_cells, n_component, phys_setup: PhysicalSetup, init_val=None, device="cpu"):
+    def __init__(self, n_cells, n_comp, phys_setup: FluidConstitution, init_val=None, device="cpu"):
         self.device = device
         self.phys_setup = phys_setup
 
         if init_val is None:
-            self.state = torch.zeros(n_cells, n_component, device=device)
+            self.state = torch.zeros(n_cells, n_comp, device=device)
         else:
-            assert init_val.shape == (n_cells, n_component), f'Incorrect us init shape {init_val.shape = }'
+            assert init_val.shape == (n_cells, n_comp), f'Incorrect us init shape {init_val.shape = }'
             self.state = init_val.to(device)
-
 
     def update_cells(self, state_new):
         """ Update cell values """
-        self.state =  state_new
+        self.state = state_new
 
     def get_values(self):
         return self.phys_setup.state_to_primative(self.state)
@@ -56,8 +53,8 @@ class TSolver(ABC):
         """
         Initialize the time-stepping solver.
         """
+        self.cfg = cfg
         self.device = cfg.device
-        self.dt = cfg.dt
         self.n_steps = cfg.n_iter
         self.end_t   = cfg.end_t
         self.cells = cells
@@ -68,6 +65,9 @@ class TSolver(ABC):
         self.save_t = cfg.save_t
         self.exact_interval = cfg.exact_interval
         self.saver = Saver(self.eq.E_props, save_dir=cfg.save_dir)
+
+        # Initialise dt from config. Adaptive solvers can overwrite this value in the step function.
+        self.dt = torch.tensor(cfg.dt, device=self.device)
 
         # replace self._solve_step with compiled version if needed
         if cfg.compile:
@@ -80,7 +80,6 @@ class TSolver(ABC):
                 - Plots the solution every plot_t seconds.
                 - Saves the solution every save_t seconds.
         """
-        self.dt = torch.tensor(self.dt, device=self.device)
         next_plot_t = 0 # self.plot_t
         save_count = 1
         next_save_t = self.save_t  # always derived as save_count * save_t to avoid float drift
@@ -122,6 +121,7 @@ class TSolver(ABC):
                 self._solve_step(t)
             dts.append(self.dt)
 
+            # Printing, Plotting and Saving
             if i % self.print_i == 0:
                 irl_time = (time.time() - st_time)/self.print_i
                 avg_dt = sum(dts[-self.print_i:]) / len(dts[-self.print_i:])
@@ -141,7 +141,7 @@ class TSolver(ABC):
 
                 if torch.any(torch.isnan(primatives)):
                     print("Nan in primatives")
-                    exit(9)
+                    raise ValueError("Nan detected in primatives")
 
             if t >= next_save_t:
                 save_count += 1
@@ -163,51 +163,13 @@ class TSolver(ABC):
             plt.show()
 
 
-    # def _save_meshio(self, primatives):
-    #     """ Save as .vtu file for paraview """
-    #     import meshio
-    #     import glob, os
-    #
-    #     # Get save name
-    #     os.makedirs('saves', exist_ok=True)
-    #     vtu_files = glob.glob('./saves/*.vtu')
-    #     number = [int(file.replace('.vtu', '').split('_')[-1]) for file in vtu_files]
-    #
-    #     if len(number) == 0:
-    #         number = 0
-    #     else:
-    #         number = max(number) + 1
-    #     save_name = f'./saves/save_{number:05d}.vtu'
-    #     print(f'{save_name = }')
-    #
-    #     # Save mesh
-    #     E_props = self.eq.E_props
-    #     points = E_props.mesh.vertices.numpy()
-    #     cells = [("triangle", E_props.mesh.triangles.numpy())]
-    #     Vx, Vy, rho, T = primatives[:, 0], primatives[:, 1], primatives[:, 2], primatives[:, 3]
-    #     Vx, Vy, rho, T = Vx.cpu().unsqueeze(0).numpy(), Vy.cpu().unsqueeze(0).numpy(), rho.cpu().unsqueeze(0).numpy(), T.cpu().unsqueeze(0).numpy()
-    #
-    #     state = self.cells.state
-    #     momx, momy, E = state[:, 0], state[:, 1], state[:, 3]
-    #     momx, momy, E = momx.cpu().unsqueeze(0).numpy(), momy.cpu().unsqueeze(0).numpy(), E.cpu().unsqueeze(0).numpy()
-    #     P = self.eq.phy_setup.R * rho * T
-    #     mesh = meshio.Mesh(
-    #         points,
-    #         cells,
-    #         # Optionally provide extra data on points, cells, etc.
-    #         cell_data={"Vx": Vx, "Vy": Vy, "P": P, "rho": rho, "T": T, "MomX": momx, "MomY": momy, "E": E, },
-    #     )
-    #     mesh.write(
-    #         save_name,  # str, os.PathLike, or buffer/open file
-    #     )
-
     @torch.inference_mode()
     def solve(self):
-        run = True
-        if run:
-            self._solve()
-        else:
+        profile = self.cfg.profile
+        if profile:
             self._solve_profile()
+        else:
+            self._solve()
 
     def _solve_step(self, t):
         new_Us = self._step(t)
@@ -215,42 +177,15 @@ class TSolver(ABC):
 
     def _solve_profile(self):
         import torch.profiler
-
-        for i in range(5):
+        # warmup
+        for i in range(10):
             t = i * self.dt
             self._solve_step(t)
 
-        # import gc
-        # gc.collect()
-        # torch.cuda.empty_cache()
-        # tot_el = 0
-        # for name, value in vars(self.eq.t_solver).items():
-        #
-        #     if torch.is_tensor(value) and value.is_cuda:
-        #         if value.is_sparse or value.is_sparse_csr:
-        #             numel = value._nnz()
-        #         else:
-        #             numel = value.numel()
-        #         print(f"Name: {name}, Size: {value.size()}, numel = {numel}")
-        #         tot_el += numel
-        #
-        # c_print(f'{tot_el = }', color="magenta")
-
         with torch.profiler.profile(
-                activities=[
-                    torch.profiler.ProfilerActivity.CPU,
-                    torch.profiler.ProfilerActivity.CUDA,
-                ],
-                # schedule=torch.profiler.schedule(
-                #     warmup=1,  # Skip the first iteration (warm-up)
-                #     wait=1,  # Skip the first iteration (warm-up)
-                #     active=3  # Capture the next 3 iterations
-                # ),
-                # on_trace_ready=torch.profiler.tensorboard_trace_handler('./log'),
-                record_shapes=True,  # Records tensor shapes for each op
-                with_stack=True,
+                activities=[torch.profiler.ProfilerActivity.CPU, torch.profiler.ProfilerActivity.CUDA],
+                record_shapes=True, with_stack=True,
         ) as prof:
-
             for i in range(10):
                 t = i * self.dt
                 prof.step()
@@ -269,11 +204,11 @@ class TSolver(ABC):
         """
         pass
 
-    def _euler_step(self, U, t):
+    def _euler_step(self, U):
         prim_a, _ = self.cells.convert_state_to_value(U)
-        U_i_1 = U + self.dt * self.eq.forward(prim_a, self.dt, t)
+        U_i_1 = U + self.dt * self.eq.forward(prim_a)
         return U_i_1
 
-    def _forward_state(self, U, t):
+    def _forward_state(self, U):
         prim, _ = self.cells.convert_state_to_value(U)
-        return self.eq.forward(prim, self.dt, t)
+        return self.eq.forward(prim)

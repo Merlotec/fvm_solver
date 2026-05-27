@@ -77,15 +77,15 @@ def _create_mesh_thread(holes, points, p_marks, segments, seg_marks, mesh_props,
         # Wrapper function hides exceptions raised here.
         try:
             """ True if area is too big. False if area is small enough"""
-            if area < props.min_area:
+            if area < props.min_cell:
                 return False
-            if area > props.max_area:
+            if area > props.max_cell:
                 return True
             centroid = np.mean(vertices, axis=0)
             dist = min_dist_to_boundary(centroid, points, segments)
 
             # Increase refinement near the boundaries and if the area is too large
-            threshold = (props.max_area - props.min_area) * (1 - np.exp(-dist / props.lengthscale)) + props.min_area
+            threshold = (props.max_cell - props.min_cell) * (1 - np.exp(-dist / props.lengthscale)) + props.min_cell
 
         except Exception as e:
             c_print(f"Exception raised: {e}", color="bright_red")

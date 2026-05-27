@@ -22,3 +22,5 @@ plotly
 # treverhines-rbf
 meshpy
 shapely
+pyvista
+tetgen

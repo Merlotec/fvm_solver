@@ -3,7 +3,7 @@ from typing import TYPE_CHECKING
 from collections import deque
 import torch
 
-from time_fvm.t_solvers import TSolver, FVMCells
+from time_fvm.time_solvers.t_solvers import TSolver, FVMCells
 if TYPE_CHECKING:
     from time_fvm.fvm_equation import FVMEquation
     from time_fvm.config_fvm import ConfigFVM
@@ -27,6 +27,8 @@ def get_solver(cells: FVMCells, equation: FVMEquation, cfg: ConfigFVM) -> TSolve
         raise NotImplementedError("Invalid solver.")
 
 class Adaptive:
+    dt: torch.Tensor
+
     def _adapt_init(self, order: int, rtol, atol, mtol, alphas, dt_min=None, dt_max=None, device="cuda"):
         self.order = order
         self.rtol = rtol
@@ -49,105 +51,15 @@ class Adaptive:
         diff = dU_high - dU_low
 
         # Compute a new time step size based on the difference
-        # For example, you could use a simple heuristic like:
         E = torch.norm(diff, dim=0) / (self.atol + self.rtol * torch.norm(dU_high, dim=0) + self.mtol * torch.norm(Us, dim=0))
         E = E.mean()
 
         # If E<1, increase the time step size, otherwise decrease step size
-        factor = 0.9 * (1 / E) ** (1 / self.order)
+        factor = 0.9 * E ** (-1 / self.order)
         alpha = torch.where(E > 1, self.alphas[0], self.alphas[1])
 
-        self.dt = self.dt * (alpha  + (1-alpha) * factor)
-
-
-class Butcher_Tables:
-    def __init__(self, name, device):
-        if name == "RK4":
-            A = torch.tensor([
-                [0.0, 0.0, 0.0, 0.0],
-                [0.5, 0.0, 0.0, 0.0],
-                [0.0, 0.5, 0.0, 0.0],
-                [0.0, 0.0, 1.0, 0.0]
-            ], dtype=torch.float32)
-
-            b = torch.tensor([1 / 6, 1 / 3, 1 / 3, 1 / 6], dtype=torch.float32)
-            c = torch.tensor([0.0, 0.5, 0.5, 1.0], dtype=torch.float32)
-
-        elif name == "RK3_SSP4":
-            A = torch.tensor([
-                [0.0, 0.0, 0.0, 0.0],
-                [0.5, 0.0, 0.0, 0.0],
-                [0.5, 0.5, 0.0, 0.0],
-                [1 / 6, 1 / 6, 1 / 6, 0.0]
-            ], dtype=torch.float32)
-
-            b = torch.tensor([1 / 6, 1 / 6, 1 / 6, 1 / 2], dtype=torch.float32)
-            c = torch.tensor([0.0, 0.5, 1, 0.5], dtype=torch.float32)
-            b2 = torch.tensor([1 / 4, 1 / 4, 1 / 4, 1 / 4], dtype=torch.float32)
-            self.b2 = b2.reshape(-1, 1, 1)
-
-        elif name == "RK3_SSP5":
-            A = torch.tensor([
-                [0.0, 0.0, 0.0, 0.0, 0],
-                [0.37726891511710, 0.0, 0.0, 0.0, 0],
-                [0.37726891511710, 0.37726891511710, 0.0, 0.0, 0],
-                [0.16352294089771, 0.16352294089771, 0.16352294089771, 0.0, 0],
-                [0.14904059394856, 0.14831273384724, 0.14831273384724, 0.34217696850008, 0],
-            ], dtype=torch.float32)
-
-            b = torch.tensor([0.19707596384481, 0.11780316509765, 0.11709725193772, 0.27015874934251, 0.29786487010104], dtype=torch.float32)
-            c = torch.tensor([0, 0.37726891511710 , 0.75453783023419 , 0.49056882269314 , 0.78784303014311 ], dtype=torch.float32)
-            b2 = torch.tensor([1/5, 1/5, 1/5, 1/5, 1/5], dtype=torch.float32)
-
-        elif name == """RK3_SSP6""":
-            A = torch.tensor([
-                [0.0, 0.0, 0.0, 0.0, 0, 0],
-                [0.28422, 0.0, 0.0, 0.0, 0, 0],
-                [0.28422, 0.28422, 0.0, 0.0, 0, 0],
-                [0.23071, 0.23071, 0.23071, 0.0, 0, 0],
-                [0.13416, 0.13416, 0.13416, 0.16528, 0, 0],
-                [0.13416, 0.13416, 0.13416, 0.16528, 0.28422, 0]
-            ], dtype=torch.float32)
-
-            b = torch.tensor([0.17016,  0.17016,  0.10198,  0.12563,  0.21604,  0.21604], dtype=torch.float32)
-            c = torch.tensor([0, 0.28422, 0.56844 , 0.69213, 0.56776, 0.85198], dtype=torch.float32)
-            b2 = torch.tensor([1/6, 1/6, 1/6, 1/6, 1/6, 1/6], dtype=torch.float32)
-
-        elif name == """RK4_SSP5""":
-            A = torch.tensor([
-                [0.0, 0.0, 0.0, 0.0, 0],
-                [0.39175222700392, 0.0, 0.0, 0.0, 0],
-                [0.21766909633821, 0.36841059262959, 0.0, 0.0, 0],
-                [0.08269208670950, 0.13995850206999,  0.25189177424738, 0.0, 0],
-                [0.06796628370320, 0.11503469844438, 0.20703489864929, 0.54497475021237, 0],
-            ], dtype=torch.float32)
-
-            b = torch.tensor([0.14681187618661, 0.24848290924556, 0.10425883036650, 0.27443890091960, 0.22600748319395], dtype=torch.float32)
-            c = torch.tensor([0., 0.39175222700392, 0.58607968896779 , 0.47454236302687, 0.93501063100924], dtype=torch.float32)
-
-        elif name == "RK4_SSP10":
-            A = torch.tensor([
-                [0]*10,
-                [1/6] + [0]*9,
-                [1/6]*2 + [0]*8,
-                [1/6]*3 + [0]*7,
-                [1/6]*4 + [0]*6,
-                [1/15]*5 + [0]*5,
-                [1 / 15] * 5 + [1/6] + [0]*4,
-                [1 / 15] * 5 + [1/6]*2 + [0]*3,
-                [1 / 15] * 5 + [1/6]*3 + [0]*2,
-                [1 / 15] * 5 + [1/6]*4 + [0]*1,
-
-            ], dtype=torch.float32)
-            b = torch.tensor([1/10]*10, dtype=torch.float32)
-            c = A.sum(dim=1)
-
-            b2 = torch.tensor([1/5, 0, 0, 3/10, 0, 0, 1/5, 0, 3/10, 0], dtype=torch.float32)
-        else:
-            raise NotImplementedError("Unknown Butcher tableau")
-
-        self.A, self.b, self.c = A.to(device), b.reshape(-1, 1, 1).to(device), c.to(device)
-        self.b2 = b2.reshape(-1, 1, 1).to(device) if 'b2' in locals() else None
+        scale_factor = torch.addcmul(alpha, (1-alpha), factor)
+        self.dt.mul_(scale_factor)
 
 
 class RK3_SSP4(TSolver, Adaptive):
@@ -166,16 +78,16 @@ class RK3_SSP4(TSolver, Adaptive):
 
         U_0 = self.cells.state
         # U_a = 1/2 * U_i + 1/2 * [U_i + dt * f(U_i)]
-        U_a = 1/2 * (U_0 + self._euler_step(U_0, t=t))
+        U_a = 1/2 * (U_0 + self._euler_step(U_0))
 
         # U_b = 1/2 * U_a + 1/2 * [U_a + dt * f(U_a)]
-        U_b = 1/2 * (U_a + self._euler_step(U_a, t=t+self.dt/2))
+        U_b = 1/2 * (U_a + self._euler_step(U_a))
 
         # U_c = 2/3 * U_i + 1/6 * U_b + 1/6 * [U_b + dt * f(U_b)]
-        U_c = 2/3 * U_0 + 1/6 * (U_b + self._euler_step(U_b, t=t+self.dt))
+        U_c = 2/3 * U_0 + 1/6 * (U_b + self._euler_step(U_b))
 
         # U_{i+1} = 1/2 * U_c + 1/2 [U_c + dt * f(U_c)]
-        U_i_1 = 1/2 * (U_c + self._euler_step(U_c, t=t+self.dt/2))
+        U_i_1 = 1/2 * (U_c + self._euler_step(U_c))
 
         self.update_stepsize((U_i_1 - U_0), (U_b - U_0), U_0)
 
@@ -227,7 +139,7 @@ class Adams3PC(TSolver, Adaptive):
         U_a = U_0 + self.dt / 36 * (53 * dUdt_0 - 22 * dUdt_m1 + 6 * dUdt_m2)
 
         # U_{t+1} = U_t + dt/12 * [5 * f(U_a) + 8 * f(U_{t}) - 1 * f(U_{t-1})]
-        dUdt_a = self._forward_state(U_a, t)
+        dUdt_a = self._forward_state(U_a)
         dU_high = self.dt/12 * (5 * dUdt_a + 8 * dUdt_0 - dUdt_m1)
         dU_low = self.dt/2 * (dUdt_a + dUdt_0)
         U_1_high =  U_0 + dU_high
@@ -256,7 +168,7 @@ class Adams4PC(TSolver, Adaptive):
 
     def _init_states(self, t):
         prim, _ = self.cells.get_values()
-        dUdt_0 = self.eq.forward(prim, self.dt, t)
+        dUdt_0 = self.eq.forward(prim)
 
         self.dUdt_m1 = dUdt_0
         self.dUdt_m2 = dUdt_0
@@ -272,7 +184,7 @@ class Adams4PC(TSolver, Adaptive):
 
         prim_t, U_0 = self.cells.get_values()
 
-        dUdt_0 = self.eq.forward(prim_t, self.dt, t)
+        dUdt_0 = self.eq.forward(prim_t)
         dUdt_m1 = self.dUdt_m1
         dUdt_m2 = self.dUdt_m2
 
@@ -298,6 +210,98 @@ class Adams4PC(TSolver, Adaptive):
         return U_1_high
 
 
+class Butcher_Tables:
+    b2: torch.Tensor
+    def __init__(self, name, device):
+        if name == "RK4":
+            A = torch.tensor([
+                [0.0, 0.0, 0.0, 0.0],
+                [0.5, 0.0, 0.0, 0.0],
+                [0.0, 0.5, 0.0, 0.0],
+                [0.0, 0.0, 1.0, 0.0]
+            ], dtype=torch.float32)
+
+            b = torch.tensor([1 / 6, 1 / 3, 1 / 3, 1 / 6], dtype=torch.float32)
+            c = torch.tensor([0.0, 0.5, 0.5, 1.0], dtype=torch.float32)
+            b2 = torch.tensor([1 / 4, 1 / 4, 1 / 4, 1 / 4], dtype=torch.float32)
+
+        elif name == "RK3_SSP4":
+            A = torch.tensor([
+                [0.0, 0.0, 0.0, 0.0],
+                [0.5, 0.0, 0.0, 0.0],
+                [0.5, 0.5, 0.0, 0.0],
+                [1 / 6, 1 / 6, 1 / 6, 0.0]
+            ], dtype=torch.float32)
+
+            b = torch.tensor([1 / 6, 1 / 6, 1 / 6, 1 / 2], dtype=torch.float32)
+            c = torch.tensor([0.0, 0.5, 1, 0.5], dtype=torch.float32)
+            b2 = torch.tensor([1 / 4, 1 / 4, 1 / 4, 1 / 4], dtype=torch.float32)
+
+        elif name == "RK3_SSP5":
+            A = torch.tensor([
+                [0.0, 0.0, 0.0, 0.0, 0],
+                [0.37726891511710, 0.0, 0.0, 0.0, 0],
+                [0.37726891511710, 0.37726891511710, 0.0, 0.0, 0],
+                [0.16352294089771, 0.16352294089771, 0.16352294089771, 0.0, 0],
+                [0.14904059394856, 0.14831273384724, 0.14831273384724, 0.34217696850008, 0],
+            ], dtype=torch.float32)
+
+            b = torch.tensor([0.19707596384481, 0.11780316509765, 0.11709725193772, 0.27015874934251, 0.29786487010104], dtype=torch.float32)
+            c = torch.tensor([0, 0.37726891511710 , 0.75453783023419 , 0.49056882269314 , 0.78784303014311 ], dtype=torch.float32)
+            b2 = torch.tensor([1/5, 1/5, 1/5, 1/5, 1/5], dtype=torch.float32)
+
+        elif name == """RK3_SSP6""":
+            A = torch.tensor([
+                [0.0, 0.0, 0.0, 0.0, 0, 0],
+                [0.28422, 0.0, 0.0, 0.0, 0, 0],
+                [0.28422, 0.28422, 0.0, 0.0, 0, 0],
+                [0.23071, 0.23071, 0.23071, 0.0, 0, 0],
+                [0.13416, 0.13416, 0.13416, 0.16528, 0, 0],
+                [0.13416, 0.13416, 0.13416, 0.16528, 0.28422, 0]
+            ], dtype=torch.float32)
+
+            b = torch.tensor([0.17016,  0.17016,  0.10198,  0.12563,  0.21604,  0.21604], dtype=torch.float32)
+            c = torch.tensor([0, 0.28422, 0.56844 , 0.69213, 0.56776, 0.85198], dtype=torch.float32)
+            b2 = torch.tensor([1/6, 1/6, 1/6, 1/6, 1/6, 1/6], dtype=torch.float32)
+
+        elif name == """RK4_SSP5""":
+            A = torch.tensor([
+                [0.0, 0.0, 0.0, 0.0, 0],
+                [0.39175222700392, 0.0, 0.0, 0.0, 0],
+                [0.21766909633821, 0.36841059262959, 0.0, 0.0, 0],
+                [0.08269208670950, 0.13995850206999,  0.25189177424738, 0.0, 0],
+                [0.06796628370320, 0.11503469844438, 0.20703489864929, 0.54497475021237, 0],
+            ], dtype=torch.float32)
+
+            b = torch.tensor([0.14681187618661, 0.24848290924556, 0.10425883036650, 0.27443890091960, 0.22600748319395], dtype=torch.float32)
+            c = torch.tensor([0., 0.39175222700392, 0.58607968896779 , 0.47454236302687, 0.93501063100924], dtype=torch.float32)
+            b2 = torch.tensor([1 / 5, 1 / 5, 1 / 5, 1 / 5, 1 / 5], dtype=torch.float32)
+
+        elif name == "RK4_SSP10":
+            A = torch.tensor([
+                [0]*10,
+                [1/6] + [0]*9,
+                [1/6]*2 + [0]*8,
+                [1/6]*3 + [0]*7,
+                [1/6]*4 + [0]*6,
+                [1/15]*5 + [0]*5,
+                [1 / 15] * 5 + [1/6] + [0]*4,
+                [1 / 15] * 5 + [1/6]*2 + [0]*3,
+                [1 / 15] * 5 + [1/6]*3 + [0]*2,
+                [1 / 15] * 5 + [1/6]*4 + [0]*1,
+
+            ], dtype=torch.float32)
+            b = torch.tensor([1/10]*10, dtype=torch.float32)
+            c = A.sum(dim=1)
+            b2 = torch.tensor([1/5, 0, 0, 3/10, 0, 0, 1/5, 0, 3/10, 0], dtype=torch.float32)
+
+        else:
+            raise NotImplementedError("Unknown Butcher tableau")
+
+        self.A, self.b, self.c = A.to(device), b.reshape(-1, 1, 1).to(device), c.to(device)
+        self.b2 = b2.reshape(-1, 1, 1).to(device)
+
+
 class ButcherAdapt(TSolver, Adaptive):
     def __init__(self, cells: FVMCells, equation, name, cfg: ConfigFVM):
         super().__init__(cells, eq=equation, cfg=cfg)
@@ -314,7 +318,6 @@ class ButcherAdapt(TSolver, Adaptive):
         self.stages = self.b.shape[0]
 
         self._adapt_init(order=4, atol=2e-3, rtol=2e-3, mtol=1e-6, alphas=(0.8, 0.995), dt_min=self.dt*0.5, device=cfg.device)
-        self.k = torch.zeros((self.stages, *self.cells.state.shape), device=self.A.device)
 
     def _step(self, t) -> torch.Tensor:
         """
@@ -325,24 +328,21 @@ class ButcherAdapt(TSolver, Adaptive):
         """
 
         state_0 = self.cells.state
+        k = torch.zeros((self.stages, *state_0.shape), device=self.A.device)
 
-          # shape = [stages, n_cells, n_comp]
-        for i in range(self.stages):
-            if i == 0:
-                increment = 0
-            else:
-                # Compute the increment for y using previous stages
-                increment = (self.A[i, :i] * self.k[:i]).sum(dim=0)
-            # Evaluate the derivative at the stage time and state
-            k_i =  self.dt * self._forward_state(state_0 + increment, t + self.c[i] * self.dt)
-            self.k[i] = k_i
+        k[0] = self.dt * self._forward_state(state_0)
 
-        # Combine stages to compute next state
-        dU_high = torch.sum(self.b * self.k, dim=0)
-        dU_low = torch.sum(self.b2 * self.k, dim=0)
-        U_next_high = state_0 + dU_high
+        for i in range(1, self.stages):
+            increment = torch.einsum("j...,j...->...", self.A[i, :i], k[:i])
+            k[i] = self.dt * self._forward_state(state_0 + increment)
+
+        # Combine stages to compute next state, using lower accuracy state as adaptive stepsize estimate
+        dU_high = torch.sum(self.b * k, dim=0)
+        dU_low = torch.sum(self.b2 * k, dim=0)
 
         self.update_stepsize(dU_high, dU_low, state_0)
+        U_next_high = state_0 + dU_high
+
         return U_next_high
 
 
@@ -385,7 +385,7 @@ class Butcher(TSolver):
                 # Compute the increment for y using previous stages
                 increment = (self.A[i, :i].unsqueeze(-1).unsqueeze(-1) * k[:i]).sum(dim=0)
             # Evaluate the derivative at the stage time and state
-            k_i = self.dt * self._forward_state(state_0 + increment, t + self.c[i] * self.dt)
+            k_i = self.dt * self._forward_state(state_0 + increment)
             k[i] = k_i
 
         # Combine stages to compute next state
