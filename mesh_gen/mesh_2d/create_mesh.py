@@ -147,8 +147,19 @@ def _gmsh_create_mesh(coords, mesh_props, min_angle):
         unique_ref_tags = list(set(refinement_curve_tags))
         if unique_ref_tags:
             fd = gmsh.model.mesh.field.add("Distance")
-            gmsh.model.mesh.field.setNumbers(fd, "CurvesList", unique_ref_tags)
-            gmsh.model.mesh.field.setNumber(fd, "Sampling", 200)
+            # Parameter names changed across gmsh versions: try new name first.
+            for curves_param in ("CurvesList", "EdgesList"):
+                try:
+                    gmsh.model.mesh.field.setNumbers(fd, curves_param, unique_ref_tags)
+                    break
+                except Exception:
+                    pass
+            for sampling_param in ("Sampling", "NNodesByEdge"):
+                try:
+                    gmsh.model.mesh.field.setNumber(fd, sampling_param, 200)
+                    break
+                except Exception:
+                    pass
 
             fm = gmsh.model.mesh.field.add("MathEval")
             # size = (max - min) * (1 - exp(-dist / L)) + min
@@ -234,6 +245,8 @@ def create_mesh(coords: list, mesh_props, min_angle=None):
     except MeshGenerationError:
         raise
     except Exception as e:
+        import traceback
+        logging.error("gmsh mesh generation failed:\n%s", traceback.format_exc())
         raise MeshGenerationError(f"gmsh mesh generation failed: {e}") from e
 
     return mesh_specs, marker_names

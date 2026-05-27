@@ -103,8 +103,8 @@ def gen_rand_mesh(areas, cell_lnscale=2, max_geom_retries=20):
         try:
             mesh_specs, marker_tags = create_mesh(coords, mesh_props, min_angle=30)
             break
-        except MeshGenerationError:
-            logging.warning("Geometry attempt %d/%d failed, resampling ellipses.", attempt, max_geom_retries)
+        except MeshGenerationError as e:
+            logging.warning("Geometry attempt %d/%d failed (%s), resampling ellipses.", attempt, max_geom_retries, e)
     else:
         raise RuntimeError(f"Could not generate a valid mesh after {max_geom_retries} geometry attempts.")
 
