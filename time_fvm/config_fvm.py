@@ -23,6 +23,7 @@ class ConfigBC(ABC):
 class ConfigFVM(ABC):
     device: str = "cpu"
     compile: bool = True
+    profile: bool = False
 
     problem_setup: str | None = None    # {ellipse, nozzle}
     N_comp: int = 4     # Number of components in the state vector (e.g., [momentum_x, momentum_y, density, energy])
