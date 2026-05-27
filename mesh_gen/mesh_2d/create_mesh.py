@@ -103,22 +103,33 @@ def _create_mesh_thread(holes, points, p_marks, segments, seg_marks, mesh_props,
     out_queue.put(("ok", mesh_specs))
 
 
-def safe_run(args):
-    """ Run mesh generation in a separate process to catch crashes, and repeat if it happens. """
-    while True:
-        ctx = mp.get_context("spawn")  # safer / more predictable on many platforms
+class MeshGenerationError(RuntimeError):
+    pass
+
+
+def safe_run(args, max_retries=5):
+    """ Run mesh generation in a separate process to catch crashes.
+
+    Raises MeshGenerationError after max_retries consecutive failures so the
+    caller can try different geometry rather than looping on the same bad input.
+    """
+    for attempt in range(1, max_retries + 1):
+        ctx = mp.get_context("spawn")
         out_queue = ctx.Queue()
         p = ctx.Process(target=_create_mesh_thread, args=tuple(args + [out_queue]))
         p.start()
-        p.join()  # wait however long the mesh takes
+        p.join()
         if p.exitcode != 0:
-            logging.warning("Mesh generation process crashed (exit code %d), retrying.", p.exitcode)
+            logging.warning("Mesh generation process crashed (exit code %d), attempt %d/%d.",
+                            p.exitcode, attempt, max_retries)
             continue
         status, payload = out_queue.get_nowait()
         if status == "error":
-            logging.warning("Exception in mesh generation process:\n" + payload[1])
+            logging.warning("Exception in mesh generation process (attempt %d/%d):\n%s",
+                            attempt, max_retries, payload[1])
             continue
         return payload
+    raise MeshGenerationError(f"Mesh generation failed after {max_retries} attempts.")
 
 
 def create_mesh(coords: list, mesh_props, min_angle=None):
