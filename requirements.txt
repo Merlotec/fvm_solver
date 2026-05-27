@@ -20,7 +20,7 @@ plotly
 
 # Graph utils
 # treverhines-rbf
-meshpy
+gmsh
 shapely
 pyvista
 tetgen
