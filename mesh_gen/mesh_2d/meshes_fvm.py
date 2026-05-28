@@ -77,7 +77,7 @@ def gen_mesh_tunnel(areas, cell_lnscale=2):
 
 def gen_rand_mesh(areas, cell_lnscale=2, max_geom_retries=20):
     xmin, xmax = 0, 2
-    ymin, ymax = 0, 1.5
+    ymin, ymax = 0, 2
 
     min_area, max_area = areas
     mesh_props = MeshProps(min_area, max_area, lengthscale=cell_lnscale)
