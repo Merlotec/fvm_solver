@@ -83,12 +83,14 @@ def gen_rand_mesh(areas, cell_lnscale=2, max_geom_retries=20):
     mesh_props = MeshProps(min_area, max_area, lengthscale=cell_lnscale)
     lengthscale = np.sqrt(2 * min_area)
 
+    lims = [xmin, ymin], [xmax, ymax]
+
     base_coords = [
                 Line([[xmin, ymin], [xmax, ymin]], False, name="NavierWall"),     # Bottom
                 Line([[xmin, ymax], [xmax, ymax]], False, name="NavierWall"),     # Top
                 Line([[xmin, ymin], [xmin, ymax]], False, name="Left"),           # Left
                 Line([[xmax, ymax], [xmax, ymin]], False, name="Right"),          # Right
-                Line([[0.75, 0.7], [2.5, 0.7]], True, real=False, name=None),     # Refinement wall
+                Line([[0.75, 0.7], [xmax, 0.7]], True, real=False, name=None),    # Refinement wall
     ]
 
     for attempt in range(1, max_geom_retries + 1):
@@ -97,7 +99,7 @@ def gen_rand_mesh(areas, cell_lnscale=2, max_geom_retries=20):
         coords = base_coords + [
             Ellipse(center=spec['center'], semi_major_axis=spec['semi_major'],
                     eccentricity=spec['eccentricity'], angle=spec['angle'],
-                    lengthscale=lengthscale, hole=True, dist_req=True, name="NavierWall")
+                    lengthscale=lengthscale, lims=lims, hole=True, dist_req=True, name="NavierWall")
             for spec in rand_ellipses
         ]
         try:
