@@ -80,6 +80,7 @@ def init_conds_ellipses(mesh: FVMMesh2D, edge_tag, bound_edgs, phy_setup: FluidC
     # Set initial conditions same as inlet
     inlet_cfg = cfg.inlet_cfg
     v_in = inlet_cfg.v_n_inf
+    v_t = inlet_cfg.v_t_inf          # tangential inflow -> angled freestream (0 = axial)
     T_in = inlet_cfg.T_inf
     rho_in = inlet_cfg.rho_inf
 
@@ -101,7 +102,7 @@ def init_conds_ellipses(mesh: FVMMesh2D, edge_tag, bound_edgs, phy_setup: FluidC
     n_cells = mesh.n_cells
     prims_init = torch.zeros([n_cells, 1]).repeat(1, 4)
     prims_init[:, 0] = v_in
-    prims_init[:, 1] = 0
+    prims_init[:, 1] = v_t
     prims_init[:, 2] = rho_in
     prims_init[:, 3] = T_in
 

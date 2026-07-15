@@ -8,6 +8,7 @@ from time_fvm.utils.plotting import plot_points, plot_interp_cell, plot_edges
 from time_fvm.fvm_stepping.facet_process import FacetCalc
 from time_fvm.time_solvers.t_solvers import FVMCells
 from time_fvm.time_solvers.integrators import get_solver
+from time_fvm.config_fvm import ViscosityModel as VM
 if TYPE_CHECKING:
     from time_fvm.mesh_utils.fvm_mesh import FVMMesh
     from config_fvm import ConfigFVM
@@ -98,9 +99,16 @@ class FluidConstitution2D(FluidConstitution):
         super().__init__(cfg, dim)
         assert self.dim == 2, "Only for 2D fluids"
 
+        # Non-Newtonian viscosity parameters (see _viscosity_coef).
+        self.visc_model = cfg.visc_model
+        self.n = cfg.visc_n
+        self.min_fact = cfg.visc_min_factor
+        self.gamma_scale = cfg.visc_gamma_scale
+
     def _tau(self, E_props: FacetCalc):
         """ Compute stress tensor:
-                tau = mu * (grad(V) + grad(V).T) + mu_b * div(V) * I
+                tau = a0(I1, I2) I + a1(I1, I2) D'
+            where D' = D - 1/2 I1 I is the deviatoric strain rate.
          """
         T = E_props.T_facet.mean(dim=1).squeeze()         # shape = [n_facets]
         grad_V_t = E_props.grad_V   # shape = [n_facets, dim=2, n_comp=2]
@@ -108,16 +116,55 @@ class FluidConstitution2D(FluidConstitution):
         # Strain and invariants
         D, I1, I2 = self._strain_values(grad_V_t)        # shape = [n_facets, 2, 2]
 
-        # Viscosity = mu * (T/T0)^(3/2) * (T0 + S) / (T + S)
-        mu = self.mu * (T /  self.T_0)**1.5 * (self.T_0 + self.S_const) / (T + self.S_const)  # shape = [n_facets]
-        # Bulk viscosity: Proportional to T^2
-        mu_b = self.mu_b * T ** 2 / self.T_0 ** 2
-
-        a0 = (-mu_b * I1).view(-1, 1, 1)         # shape = [n_facets, 1, 1]
-        a1 = (-2 * mu).view(-1, 1, 1)
+        a0, a1 = self._viscosity_coef(T, I1, I2)
 
         eye = torch.eye(2, device=self.device).unsqueeze(0)
-        self.tau = a0 * eye + a1 * D  # shape = [n_facets, 2, 2]
+        a0, a1, I1 = a0.view(-1, 1, 1), a1.view(-1, 1, 1), I1.view(-1, 1, 1)
+        self.tau = a0 * eye + a1 * (D - 1 / 2 * I1 * eye)  # shape = [n_facets, 2, 2]
+
+    def _viscosity_coef(self, T, I1, I2):
+        """ Stress magnitudes a0 (isotropic) and a1 (deviatoric).
+
+            Newtonian: a1 = -2 mu.  Non-Newtonian: a1 = -2 mu * factor(gamma_dot),
+            where gamma_dot = sqrt(2 D':D') = sqrt(2 (I2 - 1/2 I1^2)) uses the
+            distortional strain rate (correct for compressible flow).  `factor`
+            follows the chosen ViscosityModel, bounded via visc_min_factor so the
+            effective viscosity stays finite.
+        """
+        n = self.n                       # power-law index
+        min_fact = self.min_fact         # low/high-shear viscosity ratio bound
+        gamma_scale = self.gamma_scale   # shear-rate scale where non-Newtonian kicks in
+
+        # Temperature-dependent (Sutherland) shear + bulk viscosity.
+        T_eff = T / self.T_0
+        mu = self.mu * (T_eff ** 1.5) * (self.T_0 + self.S_const) / (T + self.S_const)
+        mu_b = self.mu_b * (T_eff ** 2)
+
+        a0 = -mu_b * I1
+        if self.visc_model == VM.Newtonian:
+            factor = 1
+        else:
+            # D':D' = D:D - 1/2 I1^2  (distortional part of the strain rate)
+            gamma_dot_sq = 1e-9 + 2 * (I2 - 1 / 2 * I1 ** 2).clamp(min=0)
+            if self.visc_model == VM.PowerLaw:
+                limit = 1 / min_fact
+                factor = gamma_scale ** (1 - n) * gamma_dot_sq ** ((n - 1) / 2)
+                factor = limit * torch.tanh((factor / limit) ** 2) ** (1 / 2)
+            elif self.visc_model == VM.Carreau:
+                factor = min_fact + (2 - 2 * min_fact) * (1 + 4 * gamma_scale ** (-2) * gamma_dot_sq) ** ((n - 1) / 2)
+                if n > 1:        # shear thickening
+                    factor = factor - 2 + 2 * min_fact
+            elif self.visc_model == VM.HerschelBulkley:
+                s = torch.sigmoid((gamma_scale - gamma_dot_sq.sqrt()) / (0.1 * gamma_scale))
+                factor = min_fact + (2.5 - min_fact) * s
+                if n > 1:        # shear thickening
+                    factor = 1 / factor
+            else:
+                raise ValueError(f"Unknown viscosity model: {self.visc_model}")
+        a1 = -2 * mu * factor
+
+        self.mod = factor
+        return a0, a1
 
     def _strain_values(self, grad_V_t: torch.Tensor):
         """ Compute strain tensor:

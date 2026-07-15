@@ -9,6 +9,13 @@ class BCMode(Enum):
     Farfield = "Farfield"
 
 
+class ViscosityModel(Enum):
+    Newtonian = "Newton"                    # constant viscosity
+    PowerLaw = "PowerLaw"                    # ~ gamma_dot^(n-1)
+    Carreau = "Carreau"                     # interpolate between two viscosities
+    HerschelBulkley = "HerschelBulkley"     # step between two viscosities
+
+
 class ConfigBC(ABC):
     mode: BCMode
     # Farfield physical parameters
@@ -56,6 +63,15 @@ class ConfigFVM(ABC):
     S_const: float | None = None       # Sutherland's constant
     gamma: float | None = None  # Ratio of specific heats
     C_v: float | None = None     # Specific heat at constant volume
+
+    # Non-Newtonian viscosity (see FluidConstitution2D._viscosity_coef).  Defaults
+    # give Newtonian behaviour; the generator sweeps these for shear-thinning /
+    # thickening / yield-stress fluids.  visc_n/min_factor/gamma_scale are only read
+    # for the non-Newtonian models.
+    visc_model: ViscosityModel = ViscosityModel.Newtonian
+    visc_n: float | None = 1.0             # power-law index (1 Newtonian, <1 thinning, >1 thickening)
+    visc_min_factor: float | None = 0.1    # low/high-shear viscosity ratio bound
+    visc_gamma_scale: float | None = 10.0  # shear-rate scale where non-Newtonian effects kick in
 
     # Stability parameters
     v_factor: float = 0.1     # Clamp KT diffusion term to v_factor * c to reduce viscosity.
