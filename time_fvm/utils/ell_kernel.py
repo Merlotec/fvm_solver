@@ -1,3 +1,4 @@
+from typing import Optional, Union
 """Triton ELL-packed SpMM kernel and Python wrapper."""
 
 import torch
@@ -222,7 +223,7 @@ def print_best_config():
         print("Error getting best config.")
 
 
-def csr_to_ell(csr: torch.Tensor, K: int | None = None):
+def csr_to_ell(csr: torch.Tensor, K: Optional[int] = None):
     """Convert a PyTorch sparse CSR matrix to ELL format.
 
     Returns vals: [M, K], cols: [M, K].

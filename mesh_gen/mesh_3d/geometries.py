@@ -1,3 +1,4 @@
+from typing import Optional, Union
 import numpy as np
 from dataclasses import dataclass
 
@@ -14,7 +15,7 @@ class MeshSurface3D:
     """
     hole: bool = False
     dist_req: bool = True
-    name: str | None = None
+    name: Optional[str] = None
     real_face: bool = True
 
     def build_occ(self):

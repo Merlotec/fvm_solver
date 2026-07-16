@@ -1,5 +1,5 @@
 from __future__ import annotations
-from typing import TYPE_CHECKING
+from typing import Optional, TYPE_CHECKING
 import torch
 
 from time_fvm.config_fvm import ConfigFVM, ConfigBC, BCMode

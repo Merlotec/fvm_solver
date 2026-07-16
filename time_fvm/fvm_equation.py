@@ -1,5 +1,5 @@
 from __future__ import annotations
-from typing import TYPE_CHECKING
+from typing import Optional, TYPE_CHECKING
 import torch
 from abc import ABC, abstractmethod
 from cprint import c_print
@@ -72,7 +72,7 @@ class FluidConstitution(ABC):
 
     # General gas parameters.
     def eos_c(self, rho, T):
-        """ Speed of sound, c^2 = dp/drho | s"""
+        """ Speed of sound, c^2 = dp/drho|s"""
         return torch.sqrt(self.gamma * self.R * T)
 
     def eos_P(self, rho, T):

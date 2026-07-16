@@ -1,3 +1,4 @@
+from typing import Optional, Union
 import numpy as np
 from dataclasses import dataclass
 
@@ -5,7 +6,7 @@ from dataclasses import dataclass
 class MeshFacet:
     points: np.ndarray
     segments: np.ndarray
-    hole: bool | list  # False if its to be filled, otherwise any point inside object
+    hole: Union[bool, list]  # False if its to be filled, otherwise any point inside object
     dist_req: bool  # If segment needs mesh refinement around
     name: any # Tag to be carried through to the mesh
 

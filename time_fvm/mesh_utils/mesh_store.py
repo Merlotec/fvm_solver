@@ -1,3 +1,5 @@
+from __future__ import annotations
+from typing import Optional, Union
 from enum import Flag, auto
 from dataclasses import dataclass
 
@@ -7,7 +9,7 @@ class FacetBCTypes(Flag):
 
     Dirich = auto()  # Fixed value point
     Neuman = auto()  # Fixed gradient
-    Both = Dirich | Neuman  # Both Dirichlet and Neumann BC enforced on point.
+    Both = Union[Dirich, Neuman]  # Both Dirichlet and Neumann BC enforced on point.
     Farfield = auto()  # Farfield boundary condition
     Inlet = auto()
 
@@ -16,8 +18,8 @@ class FacetBCTypes(Flag):
 class Facet:
     """"""
     edge_type: list[FacetBCTypes]
-    U: list[float| None] = None
-    dUdn: list[float | None] = None
+    U: list[Optional[float]] = None
+    dUdn: list[Optional[float]] = None
     euler_wall: bool = False
     tag: str = None
 

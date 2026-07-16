@@ -1,3 +1,4 @@
+from typing import Optional, Union
 from dataclasses import dataclass
 from abc import ABC
 from enum import Enum
@@ -32,46 +33,46 @@ class ConfigFVM(ABC):
     compile: bool = True
     profile: bool = False
 
-    problem_setup: str | None = None    # {ellipse, nozzle}
+    problem_setup: Optional[str] = None    # {ellipse, nozzle}
     N_comp: int = 4     # Number of components in the state vector (e.g., [momentum_x, momentum_y, density, energy])
 
     # Temporal solver parameters
     solver_name: str = "Butcher_adapt"
     solver_extra: str = "RK3_SSP4"
-    dt: float | None = None
-    n_iter: int | None = None     # Max number of iterations
+    dt: Optional[float] = None
+    n_iter: Optional[int] = None     # Max number of iterations
 
     # mesh parameters
-    min_A: float | None = None
-    max_A: float | None = None
-    lnscale: float | None = None
+    min_A: Optional[float] = None
+    max_A: Optional[float] = None
+    lnscale: Optional[float] = None
 
     # Save configuration
     plot: bool = True      # Set False to disable matplotlib windows
-    plot_t: float | None = None   # Time interval between plots
-    save_t: float | None = None    # Time interval between saves
-    save_dir: str | None = None    # Override output directory (default: auto timestamp under artefacts/fvm_saves)
+    plot_t: Optional[float] = None   # Time interval between plots
+    save_t: Optional[float] = None    # Time interval between saves
+    save_dir: Optional[str] = None    # Override output directory (default: auto timestamp under artefacts/fvm_saves)
     exact_interval: bool = False  # If True, clamp dt to land exactly on save_t boundaries
-    print_i: int | None = None   # Iterations between print statements
-    end_t: float | None = None       # Max simulation time.
+    print_i: Optional[int] = None   # Iterations between print statements
+    end_t: Optional[float] = None       # Max simulation time.
 
     # Physical parameters, to be overwritten
-    T_0: float | None = None        # Reference temperature
-    viscosity: float | None = None     # At reference temp
-    visc_bulk: float | None = None
-    thermal_cond: float | None = None
-    S_const: float | None = None       # Sutherland's constant
-    gamma: float | None = None  # Ratio of specific heats
-    C_v: float | None = None     # Specific heat at constant volume
+    T_0: Optional[float] = None        # Reference temperature
+    viscosity: Optional[float] = None     # At reference temp
+    visc_bulk: Optional[float] = None
+    thermal_cond: Optional[float] = None
+    S_const: Optional[float] = None       # Sutherland's constant
+    gamma: Optional[float] = None  # Ratio of specific heats
+    C_v: Optional[float] = None     # Specific heat at constant volume
 
     # Non-Newtonian viscosity (see FluidConstitution2D._viscosity_coef).  Defaults
     # give Newtonian behaviour; the generator sweeps these for shear-thinning /
     # thickening / yield-stress fluids.  visc_n/min_factor/gamma_scale are only read
     # for the non-Newtonian models.
     visc_model: ViscosityModel = ViscosityModel.Newtonian
-    visc_n: float | None = 1.0             # power-law index (1 Newtonian, <1 thinning, >1 thickening)
-    visc_min_factor: float | None = 0.1    # low/high-shear viscosity ratio bound
-    visc_gamma_scale: float | None = 10.0  # shear-rate scale where non-Newtonian effects kick in
+    visc_n: Optional[float] = 1.0             # power-law index (1 Newtonian, <1 thinning, >1 thickening)
+    visc_min_factor: Optional[float] = 0.1    # low/high-shear viscosity ratio bound
+    visc_gamma_scale: Optional[float] = 10.0  # shear-rate scale where non-Newtonian effects kick in
 
     # Stability parameters
     v_factor: float = 0.1     # Clamp KT diffusion term to v_factor * c to reduce viscosity.
@@ -79,8 +80,8 @@ class ConfigFVM(ABC):
     lim_K: float = 0.1
 
     # Boundary Configuration
-    exit_cfg: ConfigBC | None = None
-    inlet_cfg: ConfigBC | None = None
+    exit_cfg: Optional[ConfigBC] = None
+    inlet_cfg: Optional[ConfigBC] = None
 
 
 # ------------------------------- Ellipse-specific configurations -------------------------------
@@ -108,31 +109,31 @@ class EllipseInlet(ConfigBC):
 
 @dataclass
 class ConfigEllipse(ConfigFVM):
-    problem_setup: str | None = "ellipse"
+    problem_setup: Optional[str] = "ellipse"
 
     # Temporal solver parameters
-    dt: float | None        = 1e-4
-    n_iter: int | None      = 50000
+    dt: Optional[float]        = 1e-4
+    n_iter: Optional[int]      = 50000
 
     # mesh parameters
-    min_A: float | None     = 0.25e-3
-    max_A: float | None     = 0.5e-3
-    lnscale: float | None   = 2
+    min_A: Optional[float]     = 0.25e-3
+    max_A: Optional[float]     = 0.5e-3
+    lnscale: Optional[float]   = 2
 
     # Save configuration
-    plot_t: float | None    = 0.5
-    save_t: float | None    = 0.5
-    print_i: int | None     = 500
-    end_t: float | None     = 20
+    plot_t: Optional[float]    = 0.5
+    save_t: Optional[float]    = 0.5
+    print_i: Optional[int]     = 500
+    end_t: Optional[float]     = 20
 
     # Physical parameters
-    T_0: float | None           = 100
-    viscosity: float | None     = 1e-3
-    visc_bulk: float | None     = 10e-3
-    thermal_cond: float | None  = 1e-6
-    S_const: float | None       = 110.4
-    gamma: float | None         = 1.2
-    C_v: float | None           = 2
+    T_0: Optional[float]           = 100
+    viscosity: Optional[float]     = 1e-3
+    visc_bulk: Optional[float]     = 10e-3
+    thermal_cond: Optional[float]  = 1e-6
+    S_const: Optional[float]       = 110.4
+    gamma: Optional[float]         = 1.2
+    C_v: Optional[float]           = 2
 
     def __post_init__(self):
         self.exit_cfg = EllipseFarfield()
@@ -163,31 +164,31 @@ class NozzleInlet(ConfigBC):
 
 @dataclass
 class ConfigNozzle(ConfigFVM):
-    problem_setup: str | None = "nozzle"
+    problem_setup: Optional[str] = "nozzle"
 
     # Temporal solver parameters
-    dt: float | None        = 1e-4
-    n_iter: int | None      = 50000
+    dt: Optional[float]        = 1e-4
+    n_iter: Optional[int]      = 50000
 
     # mesh parameters
-    min_A: float | None     = 0.5e-3
-    max_A: float | None     = 1e-3
-    lnscale: float | None   = 2
+    min_A: Optional[float]     = 0.5e-3
+    max_A: Optional[float]     = 1e-3
+    lnscale: Optional[float]   = 2
 
     # Save configuration
-    plot_t: float | None    = 0.1
-    save_t: float | None    = 0.5
-    print_i: int | None     = 500
-    end_t: float | None     = 20
+    plot_t: Optional[float]    = 0.1
+    save_t: Optional[float]    = 0.5
+    print_i: Optional[int]     = 500
+    end_t: Optional[float]     = 20
 
     # Physical parameters
-    T_0: float | None           = 100
-    viscosity: float | None     = 5e-3
-    visc_bulk: float | None     = 50e-5
-    thermal_cond: float | None  = 1e-6
-    S_const: float | None       = 110.4
-    gamma: float | None         = 1.2
-    C_v: float | None           = 2
+    T_0: Optional[float]           = 100
+    viscosity: Optional[float]     = 5e-3
+    visc_bulk: Optional[float]     = 50e-5
+    thermal_cond: Optional[float]  = 1e-6
+    S_const: Optional[float]       = 110.4
+    gamma: Optional[float]         = 1.2
+    C_v: Optional[float]           = 2
 
     def __post_init__(self):
         self.exit_cfg = NozzleFarfield()
