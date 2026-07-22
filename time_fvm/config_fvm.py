@@ -22,7 +22,8 @@ class ConfigBC(ABC):
     # Farfield physical parameters
     v_n_inf: float
     v_t_inf: float
-    v_inf: tuple[float, ...]         # Use for 3D
+    # Global freestream vector; required in 3D, optional in 2D (see EllipseFarfield).
+    v_inf: Optional[tuple[float, ...]]
     rho_inf: float
     T_inf: float
 
@@ -94,6 +95,10 @@ class EllipseFarfield(ConfigBC):
     v_t_inf: float = 0
     rho_inf: float = 1
     T_inf: float = 100
+    # Global freestream vector (vx, vy).  When set it overrides v_n_inf/v_t_inf and is
+    # projected onto each boundary face, giving a uniform stream at any angle around a
+    # multi-sided boundary.  None keeps the face-relative scalar behaviour.
+    v_inf: Optional[tuple[float, ...]] = None
 
 
 @dataclass
@@ -101,10 +106,11 @@ class EllipseInlet(ConfigBC):
     mode: BCMode = BCMode.Characteristic
 
     # Target inlet physical parameters
-    v_n_inf = 5.5
+    v_n_inf: float = 5.5
     v_t_inf: float = 0
-    rho_inf = 1
-    T_inf = 100
+    rho_inf: float = 1
+    T_inf: float = 100
+    v_inf: Optional[tuple[float, ...]] = None
 
 
 @dataclass
@@ -119,6 +125,7 @@ class ConfigEllipse(ConfigFVM):
     min_A: Optional[float]     = 0.25e-3
     max_A: Optional[float]     = 0.5e-3
     lnscale: Optional[float]   = 2
+    n_colliders: int           = 3     # number of ellipse obstacles in the domain
 
     # Save configuration
     plot_t: Optional[float]    = 0.5

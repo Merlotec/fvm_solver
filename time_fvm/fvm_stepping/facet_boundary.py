@@ -340,27 +340,33 @@ class BC:
             rho_inf = torch.full((n,), bc_cfg.rho_inf, device=self.device)
             T_inf_list.append(T_inf)
             rho_inf_list.append(rho_inf)
-            if self.dim == 2:
+            # v_n/v_t are face-relative, so a single scalar pair can only express a
+            # stream normal to one flat side.  When bc_cfg.v_inf is given, project that
+            # global freestream vector onto each face instead — the only way to get a
+            # uniform stream at an arbitrary angle across a multi-sided boundary.
+            # Required in 3D; optional in 2D, where omitting it keeps the scalar path.
+            v_inf_vec = getattr(bc_cfg, "v_inf", None)
+            if v_inf_vec is not None:
+                v_inf = torch.as_tensor(v_inf_vec, dtype=bc_normals.dtype, device=self.device)
+                v_n_out = (bc_normals * v_inf).sum(dim=1)            # outward-positive
+                v_t_vec = v_inf - bc_normals * v_n_out.unsqueeze(-1)
+            elif self.dim == 2:
                 tangents = torch.stack((-bc_normals[:, 1], bc_normals[:, 0]), dim=1)
-                v_t_inf = tangents * bc_cfg.v_t_inf
-                v_t_inf_list.append(v_t_inf)
-                # v_n_inf is negated: bc_cfg.v_n_inf is inward-positive, we store outward-positive
-                v_n_inf_list.append(torch.full((n,), -bc_cfg.v_n_inf, device=self.device))
-
+                v_t_vec = tangents * bc_cfg.v_t_inf
+                # bc_cfg.v_n_inf is inward-positive, we store outward-positive
+                v_n_out = torch.full((n,), -bc_cfg.v_n_inf, device=self.device)
             else:
-                # 3D, get tangential and normal component directly.
-                v_inf = torch.tensor(bc_cfg.v_inf, device=self.device)
-                v_n_inf = (bc_normals * v_inf).sum(dim=1)
-                v_t_inf = v_inf - bc_normals * v_n_inf.unsqueeze(-1)
-                v_t_inf_list.append(v_t_inf)
-                v_n_inf_list.append(v_n_inf)
+                raise ValueError("3D boundary conditions require bc_cfg.v_inf")
+
+            v_n_inf_list.append(v_n_out)
+            v_t_inf_list.append(v_t_vec)
 
             if mode == BCMode.Characteristic:
                 a_inf, p_inf = phy_setup.eos_c(rho_inf, T_inf), phy_setup.eos_P(rho_inf, T_inf)
                 p_inf_list.append(p_inf)
             elif mode == BCMode.Farfield:
                 a_inf, p_inf = phy_setup.eos_c(rho_inf, T_inf), phy_setup.eos_P(rho_inf, T_inf)
-                v_n = torch.full((n,), bc_cfg.v_n_inf, device=self.device)
+                v_n = -v_n_out          # back to inward-positive, per face
                 # R_m_far = (-v_n_inf) - 2a/(γ-1), R_p_far = (-v_n_inf) + 2a/(γ-1)
                 R_m_list.append(-v_n - 2 * a_inf / (self.gamma - 1))
                 R_p_list.append(-v_n + 2 * a_inf / (self.gamma - 1))

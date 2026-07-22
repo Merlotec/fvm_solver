@@ -1,7 +1,12 @@
 import torch
 from abc import ABC, abstractmethod
 
-from time_fvm.utils.ell_kernel import csr_to_ell, ell_spmm, ell_spmv
+
+def _ell():
+    """Lazily import the Triton ELL kernels.  Triton is CUDA-only (no macOS build),
+    so this module must stay importable without it — only SPMCuda needs them."""
+    from time_fvm.utils import ell_kernel
+    return ell_kernel
 
 
 class SPM(ABC):
@@ -29,13 +34,13 @@ class SPMCuda(SPM):
             A = A.to_sparse_csr()
 
         A = A.to(device)
-        self.vals, self.cols = csr_to_ell(A)
+        self.vals, self.cols = _ell().csr_to_ell(A)
 
     def spMM(self, X: torch.Tensor, b: torch.Tensor=None) -> torch.Tensor:
-        return ell_spmm(self.vals, self.cols, X, b=b)
+        return _ell().ell_spmm(self.vals, self.cols, X, b=b)
 
     def spMV(self, x: torch.Tensor, b: torch.Tensor=None) -> torch.Tensor:
-        return ell_spmv(self.vals, self.cols, x, b=b)
+        return _ell().ell_spmv(self.vals, self.cols, x, b=b)
 
 
 class SPMGeneral(SPM):

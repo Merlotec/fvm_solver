@@ -9,7 +9,7 @@ class FacetBCTypes(Flag):
 
     Dirich = auto()  # Fixed value point
     Neuman = auto()  # Fixed gradient
-    Both = Union[Dirich, Neuman]  # Both Dirichlet and Neumann BC enforced on point.
+    Both = Dirich | Neuman  # Both Dirichlet and Neumann BC enforced on point.
     Farfield = auto()  # Farfield boundary condition
     Inlet = auto()
 
