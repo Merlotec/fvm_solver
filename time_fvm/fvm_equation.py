@@ -14,6 +14,20 @@ if TYPE_CHECKING:
     from config_fvm import ConfigFVM
 
 
+def _scal(v):
+    """Per-run physics constant as a 0-dim CPU float64 tensor.
+
+    As a plain python float, torch.compile bakes the VALUE into the graph and
+    guards on it — every parameter draw (each dataset run/segment) then forces a
+    recompile, and past dynamo's recompile limit the solver silently drops to
+    eager.  As a tensor, the guard is on metadata only, so one compiled graph
+    serves every draw.  A 0-dim CPU scalar promotes like a python float in mixed
+    ops (f32 fields stay f32, works against tensors on any device) and float64
+    keeps the constant's full precision.
+    """
+    return torch.tensor(float(v), dtype=torch.float64)
+
+
 class FluidConstitution(ABC):
     """ Set physical properties of fluid. """
     dim: int
@@ -25,13 +39,15 @@ class FluidConstitution(ABC):
         self.device = cfg.device
         self.dim = dim
 
+        # T_0 / S_const are fixed across the sweep; the rest are swept per run and
+        # therefore must be tensors (see _scal) to avoid per-run recompilation.
         self.T_0 = cfg.T_0
-        self.mu = cfg.viscosity
-        self.mu_b = cfg.visc_bulk
         self.S_const = cfg.S_const
-        self.C_v = cfg.C_v
-        self.gamma = cfg.gamma
-        self.R = self.C_v * (cfg.gamma - 1)
+        self.mu = _scal(cfg.viscosity)
+        self.mu_b = _scal(cfg.visc_bulk)
+        self.C_v = _scal(cfg.C_v)
+        self.gamma = _scal(cfg.gamma)
+        self.R = self.C_v * (self.gamma - 1)
 
     def state_to_primative(self, state: torch.Tensor):
         """ Convert from conserved quantities (momentum, rho, energy) to primitives (velocity, rho, T) """
@@ -99,11 +115,16 @@ class FluidConstitution2D(FluidConstitution):
         super().__init__(cfg, dim)
         assert self.dim == 2, "Only for 2D fluids"
 
-        # Non-Newtonian viscosity parameters (see _viscosity_coef).
+        # Non-Newtonian viscosity parameters (see _viscosity_coef).  Swept per run,
+        # so tensors (see _scal).  The enum stays python (it selects the branch; at
+        # most one graph per model).  The n>1 regime choice must be a python bool
+        # decided here: `if tensor > 1` inside the compiled region would guard on
+        # the value again.
         self.visc_model = cfg.visc_model
-        self.n = cfg.visc_n
-        self.min_fact = cfg.visc_min_factor
-        self.gamma_scale = cfg.visc_gamma_scale
+        self.n = _scal(cfg.visc_n)
+        self.min_fact = _scal(cfg.visc_min_factor)
+        self.gamma_scale = _scal(cfg.visc_gamma_scale)
+        self.shear_thickening = float(cfg.visc_n) > 1
 
     def _tau(self, E_props: FacetCalc):
         """ Compute stress tensor:
@@ -152,12 +173,12 @@ class FluidConstitution2D(FluidConstitution):
                 factor = limit * torch.tanh((factor / limit) ** 2) ** (1 / 2)
             elif self.visc_model == VM.Carreau:
                 factor = min_fact + (2 - 2 * min_fact) * (1 + 4 * gamma_scale ** (-2) * gamma_dot_sq) ** ((n - 1) / 2)
-                if n > 1:        # shear thickening
+                if self.shear_thickening:
                     factor = factor - 2 + 2 * min_fact
             elif self.visc_model == VM.HerschelBulkley:
                 s = torch.sigmoid((gamma_scale - gamma_dot_sq.sqrt()) / (0.1 * gamma_scale))
                 factor = min_fact + (2.5 - min_fact) * s
-                if n > 1:        # shear thickening
+                if self.shear_thickening:
                     factor = 1 / factor
             else:
                 raise ValueError(f"Unknown viscosity model: {self.visc_model}")
@@ -313,7 +334,7 @@ class Heating(FVMFacetFlux):
         self.E_props = E_props
         self.stress_calc = stress_calc
         self.dim = E_props.dim
-        self.kappa = cfg.thermal_cond
+        self.kappa = _scal(cfg.thermal_cond)   # swept per run — tensor, see _scal
         self.device = device
 
     def facet_fluxes(self, fluxes=None):
