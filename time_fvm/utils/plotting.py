@@ -244,7 +244,7 @@ def plot_edges(coords, edge_idx, colors=None, title="", show_index=False, lims=N
             (xmin, xmax), (ymin, ymax) = Xlims
 
         edge_nums, edge_scalars = [], []
-        for j, (edge, s) in enumerate(zip(points, edge_colors[i], strict=True)):
+        for j, (edge, s) in enumerate(zip(points, edge_colors[i])):
             midpoint = edge.mean(axis=0)
             if not ((xmin <= midpoint[0] <= xmax) and (ymin <= midpoint[1] <= ymax)):
                 continue
@@ -255,7 +255,7 @@ def plot_edges(coords, edge_idx, colors=None, title="", show_index=False, lims=N
         min_c, max_c = edge_scalars.min(), edge_scalars.max()
         edge_scalars = (edge_scalars - min_c) / (max_c - min_c + 1e-9)
 
-        for j, s in zip(edge_nums, edge_scalars, strict=True):
+        for j, s in zip(edge_nums, edge_scalars):
             c = colormap(s)
             edge = points[j]
             ax.plot(edge[:, 0], edge[:, 1], color=c)

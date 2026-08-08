@@ -378,17 +378,17 @@ class BC:
         self.v_n_inf = _cat_reorder(v_n_inf_list)       # shape = [n_bc]
         self.v_t_inf = _cat_reorder(v_t_inf_list)       # shape = [n_bc, dim]
 
-        match mode:
-            case BCMode.Characteristic:
-                self.set_bc_U_face = self.BC_characteristic
-                self.p_inf = _cat_reorder(p_inf_list)
-            case BCMode.Farfield:
-                self.set_bc_U_face = self.BC_farfield
-                self.R_m_far = _cat_reorder(R_m_list)
-                self.R_p_far = _cat_reorder(R_p_list)
-                self.S_far = _cat_reorder(S_list)
-            case _:
-                raise NotImplementedError(f"Unknown BCMode {mode}")
+        # if/elif rather than match: the HPC image runs Python 3.9 (match is 3.10+).
+        if mode == BCMode.Characteristic:
+            self.set_bc_U_face = self.BC_characteristic
+            self.p_inf = _cat_reorder(p_inf_list)
+        elif mode == BCMode.Farfield:
+            self.set_bc_U_face = self.BC_farfield
+            self.R_m_far = _cat_reorder(R_m_list)
+            self.R_p_far = _cat_reorder(R_p_list)
+            self.S_far = _cat_reorder(S_list)
+        else:
+            raise NotImplementedError(f"Unknown BCMode {mode}")
 
     def set_bc_U_face(self, U_face, Us_bc_cells):
         """ Set U_face.

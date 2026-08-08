@@ -29,7 +29,8 @@ class Facet:
         if self.dUdn is None:
             self.dUdn = [None] * len(self.edge_type)
 
-        for e, u, dudn in zip(self.edge_type, self.U, self.dUdn, strict=True):
+        assert len(self.edge_type) == len(self.U) == len(self.dUdn), 'Facet list length mismatch'
+        for e, u, dudn in zip(self.edge_type, self.U, self.dUdn):
             if FacetBCTypes.Dirich in e:
                 assert u is not None, "Dirichlet BC requires a value."
                 assert dudn is None, "Dirichlet BC does not require a gradient."
