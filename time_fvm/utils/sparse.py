@@ -43,6 +43,53 @@ class SPMCuda(SPM):
         return _ell().ell_spmv(self.vals, self.cols, x, b=b)
 
 
+def _csr_to_ell_torch(csr: torch.Tensor):
+    """CSR -> ELL packing (vals [M,K], cols [M,K]) in pure torch, no triton import.
+    Padded entries use col=0, val=0, so a gather-and-reduce yields exact results."""
+    crow, col, val = csr.crow_indices(), csr.col_indices(), csr.values()
+    M = csr.shape[0]
+    nnz_per_row = crow[1:] - crow[:-1]
+    K = int(nnz_per_row.max().item())
+    ell_cols = torch.zeros((M, K), dtype=torch.long, device=col.device)
+    ell_vals = torch.zeros((M, K), dtype=val.dtype, device=val.device)
+    for k in range(K):
+        rows = torch.nonzero(nnz_per_row > k, as_tuple=False).flatten()
+        src = crow[rows] + k
+        ell_cols[rows, k] = col[src].long()
+        ell_vals[rows, k] = val[src]
+    return ell_vals, ell_cols
+
+
+class SPMEllTorch(SPM):
+    """ELL-packed sparse matmul as dense gather + reduce — for backends whose torch
+    build lacks sparse matmul kernels.
+
+    XPU is the motivating case: sparse CSR CONSTRUCTION works there, but the matmul
+    kernels (aten::addmv/mm for SparseCsrXPU) are not implemented, so SPMGeneral
+    raises NotImplementedError at the first solver step.  Here the packing is built
+    on CPU (no sparse op ever executes on the device) and each product is
+    `(vals * x[cols]).sum(1)` — plain dense gather/mul/reduce, registered on every
+    backend and fully torch.compile-friendly.  K is the max nnz per row (~7 for
+    these FVM operators), so the dense [M, K] work is close to the true nnz.
+    """
+    def __init__(self, A: torch.Tensor, device):
+        super().__init__(A, device)
+        A = A.cpu()
+        if A.layout != torch.sparse_csr:
+            A = A.to_sparse_csr()
+        vals, cols = _csr_to_ell_torch(A)
+        self.vals = vals.to(device)     # [M, K]
+        self.cols = cols.to(device)     # [M, K] long
+
+    def spMM(self, X: torch.Tensor, b: torch.Tensor=None) -> torch.Tensor:
+        y = (self.vals.unsqueeze(-1) * X[self.cols]).sum(dim=1)   # [M, B]
+        return y if b is None else y + b
+
+    def spMV(self, x: torch.Tensor, b: torch.Tensor=None) -> torch.Tensor:
+        y = (self.vals * x[self.cols]).sum(dim=1)                 # [M]
+        return y if b is None else y + b
+
+
 class SPMGeneral(SPM):
     """ Normal sparse matrix, directly using pytorch sparse operations. """
     def __init__(self, A: torch.Tensor, device):
@@ -70,9 +117,10 @@ class SPMGeneral(SPM):
 def to_sparse(A: torch.Tensor, device) -> SPM:
     device = torch.device(device)
     if device.type == "cuda":
-        return SPMCuda(A, device)
-    else:
-        return SPMGeneral(A, device)
+        return SPMCuda(A, device)       # triton ELL kernels
+    if device.type == "xpu":
+        return SPMEllTorch(A, device)   # XPU torch has no sparse matmul kernels
+    return SPMGeneral(A, device)
 
 
 def combine_facet_operators(A_main, A_bc, b_bc, bc_edge_mask, n_edges, n_cells, n_comp, device):

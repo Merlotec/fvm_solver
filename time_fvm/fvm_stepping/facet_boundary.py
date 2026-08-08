@@ -336,8 +336,13 @@ class BC:
             n = int(bc_mask.sum().item())
             normals_list.append(bc_normals)
 
-            T_inf = torch.full((n,), bc_cfg.T_inf, device=self.device)
-            rho_inf = torch.full((n,), bc_cfg.rho_inf, device=self.device)
+            # dtype pinned: config values may be python ints (T_inf=100), which
+            # torch.full would store as int64 and let float64 physics scalars
+            # promote the whole BC pipeline to double.
+            T_inf = torch.full((n,), float(bc_cfg.T_inf), dtype=bc_normals.dtype,
+                               device=self.device)
+            rho_inf = torch.full((n,), float(bc_cfg.rho_inf), dtype=bc_normals.dtype,
+                                 device=self.device)
             T_inf_list.append(T_inf)
             rho_inf_list.append(rho_inf)
             # v_n/v_t are face-relative, so a single scalar pair can only express a
@@ -352,9 +357,10 @@ class BC:
                 v_t_vec = v_inf - bc_normals * v_n_out.unsqueeze(-1)
             elif self.dim == 2:
                 tangents = torch.stack((-bc_normals[:, 1], bc_normals[:, 0]), dim=1)
-                v_t_vec = tangents * bc_cfg.v_t_inf
+                v_t_vec = tangents * float(bc_cfg.v_t_inf)
                 # bc_cfg.v_n_inf is inward-positive, we store outward-positive
-                v_n_out = torch.full((n,), -bc_cfg.v_n_inf, device=self.device)
+                v_n_out = torch.full((n,), -float(bc_cfg.v_n_inf),
+                                     dtype=bc_normals.dtype, device=self.device)
             else:
                 raise ValueError("3D boundary conditions require bc_cfg.v_inf")
 
