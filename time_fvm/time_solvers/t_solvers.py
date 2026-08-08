@@ -103,23 +103,61 @@ class TSolver(ABC):
         st_time = time.time()
         t, dts = 0., []
         i = 0
+        nan_retries = 0
         while True:
             if self.n_steps is not None and i >= self.n_steps:
                 break
             if self.end_t is not None and t >= self.end_t:
                 break
 
+            state_before = self.cells.state    # update_cells replaces the reference,
+                                               # so this backup costs nothing
+            # E_props.cell_grads is the one value that survives across steps (the BC
+            # face extrapolation reads the PREVIOUS step's gradients before they are
+            # recomputed).  A nan step poisons it, and a restored-clean state would
+            # go nan again straight through the boundary conditions — so it must be
+            # part of the rejection restore.  Assigned by replacement, so a
+            # reference backup suffices.
+            grads_before = getattr(self.eq.E_props, "cell_grads", None)
             # If exact_interval, clamp dt so we land exactly on the next save boundary.
             # After the clamped step, restore dt so the adaptive solver continues normally.
             if self.exact_interval and t + self.dt > next_save_t:
                 dt_saved = self.dt.clone()
-                self.dt = torch.tensor(next_save_t - t, device=self.device, dtype=self.dt.dtype)
+                # float() first: t is a 0-dim tensor mid-loop, and torch.tensor(tensor)
+                # warns about copy-construction (the loop already syncs per step, so
+                # the scalar conversion costs nothing extra).
+                self.dt = torch.tensor(float(next_save_t - t), device=self.device, dtype=self.dt.dtype)
+                dt_step = self.dt.clone()
                 t += self.dt
                 self._solve_step(t)
                 self.dt = dt_saved
             else:
+                dt_step = self.dt.clone()
                 t += self.dt
                 self._solve_step(t)
+
+            # NaN guard + step rejection.  A blown-up step poisons the adaptive dt
+            # (E=nan -> dt*=nan) and then t; every comparison against a nan t is
+            # False, so save/end_t/plot checks all go dead and the loop would burn
+            # the whole n_iter budget doing nothing.  Instead: reject the step
+            # (restore state, roll back t), retry with a much smaller dt — this
+            # rescues transients that are stable at a smaller step — and give up
+            # loudly if the blow-up persists.
+            if not bool(torch.isfinite(self.cells.state).all()):
+                nan_retries += 1
+                if nan_retries > 40:
+                    raise ValueError(
+                        f"State non-finite at t={float(t - dt_step):.5g} and still "
+                        f"non-finite after {nan_retries - 1} rejected retries "
+                        f"(dt down to {float(dt_step):.3g}) — aborting run.")
+                self.cells.update_cells(state_before)
+                if grads_before is not None:
+                    self.eq.E_props.cell_grads = grads_before
+                t = t - dt_step
+                self.dt = dt_step * 0.25
+                i += 1
+                continue
+            nan_retries = 0
             dts.append(self.dt)
 
             # Printing, Plotting and Saving
