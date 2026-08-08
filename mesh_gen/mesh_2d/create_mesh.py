@@ -19,11 +19,57 @@ def extract_interor_edges(triangles):
     return unique_all_edges[all_counts == 2]
 
 
+class _PointRegistry:
+    """Merge coincident vertices with tolerance-robust snapping.
+
+    Coordinates are quantized to a `GRID` lattice; on a cache miss the 8
+    neighbouring cells are also checked and any registered point within `GRID`
+    of the query is reused.  Plain `round(x, 8)` keying is a knife-edge: facets
+    that share a junction compute its coordinates independently (line-endpoint
+    literal vs trig-evaluated profile point), and when such a value lands near a
+    rounding boundary, last-ulp libm differences between platforms decide the
+    side — one build merges the junction, another splits it into two gmsh
+    points and the boundary loop can no longer be chained.  Any two points
+    within GRID of each other differ by at most one cell index per axis, so the
+    3x3 neighbourhood check makes merging independent of where the boundary
+    falls.  (Real geometry features are >= ~1e-2 apart, far above GRID.)
+    """
+    GRID = 1e-8
+
+    def __init__(self, add_point):
+        self._add = add_point       # (x, y) -> gmsh point tag
+        self._map = {}              # (ix, iy) -> tag
+        self._coords = {}           # tag -> (x, y)
+
+    def get(self, x, y) -> int:
+        x, y = float(x), float(y)
+        ix, iy = round(x / self.GRID), round(y / self.GRID)
+        tag = self._map.get((ix, iy))
+        if tag is not None:
+            return tag
+        for dx in (-1, 0, 1):
+            for dy in (-1, 0, 1):
+                t = self._map.get((ix + dx, iy + dy))
+                if t is not None:
+                    px, py = self._coords[t]
+                    if abs(px - x) <= self.GRID and abs(py - y) <= self.GRID:
+                        self._map[(ix, iy)] = t   # alias this cell too
+                        return t
+        tag = self._add(x, y)
+        self._map[(ix, iy)] = tag
+        self._coords[tag] = (x, y)
+        return tag
+
+
 def _order_segments(seg_list):
     """Order (pt_a, pt_b, line_tag, mark_id) tuples into a connected closed loop.
 
     Returns list of (pt_a, pt_b, line_tag, mark_id, forward) where
     forward=False means the line should be traversed in reverse (-tag).
+
+    Raises MeshGenerationError when the segments do not chain into one loop —
+    proceeding with a partial loop would hand gmsh a corrupt curve loop and
+    surface later as its cryptic "1D mesh ... not forming a closed loop".
     """
     if not seg_list:
         return []
@@ -51,8 +97,10 @@ def _order_segments(seg_list):
                 found = True
                 break
         if not found:
-            logging.warning("_order_segments: could not close loop, %d segment(s) disconnected.", len(remaining))
-            break
+            raise MeshGenerationError(
+                f"boundary loop did not close: {len(remaining)}/{len(seg_list)} "
+                f"segment(s) disconnected (stuck at point tag {cur_end}) — "
+                f"usually a facet junction that failed to merge into one point.")
 
     return ordered
 
@@ -75,17 +123,9 @@ def _gmsh_create_mesh(coords, mesh_props, min_angle):
         max_size = float(np.sqrt(2.0 * mesh_props.max_cell))
         L = float(mesh_props.lengthscale)
 
-        # ---- point registry (merge coincident vertices) ----
-        _pt_map: dict[tuple, int] = {}
-        _pt_coords: dict[int, tuple[float, float]] = {}
-
-        def get_pt(x: float, y: float) -> int:
-            key = (round(float(x), 8), round(float(y), 8))
-            if key not in _pt_map:
-                tag = gmsh.model.geo.addPoint(float(x), float(y), 0.0)
-                _pt_map[key] = tag
-                _pt_coords[tag] = key
-            return _pt_map[key]
+        # ---- point registry (merge coincident vertices, tolerance-robust) ----
+        registry = _PointRegistry(lambda x, y: gmsh.model.geo.addPoint(x, y, 0.0))
+        get_pt = registry.get
 
         # ---- classify facets and build gmsh geometry ----
         refinement_curve_tags: list[int] = []
