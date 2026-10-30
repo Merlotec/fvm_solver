@@ -15,6 +15,12 @@ class ViscosityModel(Enum):
     PowerLaw = "PowerLaw"                    # ~ gamma_dot^(n-1)
     Carreau = "Carreau"                     # interpolate between two viscosities
     HerschelBulkley = "HerschelBulkley"     # step between two viscosities
+    # All four above are MONOTONE in gamma_dot: the effective viscosity only ever
+    # rises or only ever falls with shear rate.  NonMonotonic thins first and then
+    # thickens past a critical rate (dense-suspension DST / wormlike micelles), a
+    # flow-curve shape none of them can produce at any parameter setting -- which
+    # is what makes it usable as a held-out constitutive law.
+    NonMonotonic = "NonMonotonic"           # thins, then thickens above gamma_c
 
 
 class ConfigBC(ABC):

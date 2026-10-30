@@ -180,6 +180,43 @@ class FluidConstitution2D(FluidConstitution):
                 factor = min_fact + (2.5 - min_fact) * s
                 if self.shear_thickening:
                     factor = 1 / factor
+            elif self.visc_model == VM.NonMonotonic:
+                # Discontinuous shear thickening: thin, then JAM.  With
+                # x = gamma_dot / gamma_scale and a plateau A = 2 + 10n,
+                #   f(x) = f_min + (1 - f_min)/(1 + x^2)        <- Carreau-like descent
+                #        + (A - f_min) * x^8/(x^8 + 2^8)        <- near-step jump
+                # f(0) = 1 exactly, dips toward f_min near x ~ 1, then jumps at
+                # x = 1.5 to a plateau A = 5 + 45n (18..46 for visc_n < 1).
+                #
+                # Both constants were set from the MEASURED shear-rate field, not
+                # chosen a priori: gamma_dot in these flows has median ~1-5 and p95
+                # ~20-40, so an onset at 2*gamma_scale with gamma_scale ~20 left
+                # under 2% of the fluid above the jump and the fields were
+                # indistinguishable from Carreau's.  At onset 1.5*gamma_scale with
+                # gamma_scale ~3-5 (see gen_val_nonmonotonic.json) roughly 28% of
+                # the fluid thickens, giving a 22x viscosity contrast within one
+                # frame against Carreau's 2.7x.
+                #
+                # The x^8 kernel (not x^4) makes the transition nearly a step, and
+                # the plateau is an order of magnitude above the zero-shear value
+                # rather than a factor of two.  Both changes exist because the
+                # earlier smooth 1 -> 0.5 -> 1.6 version spanned the same range as
+                # Carreau's 1.7 -> 0.3 and produced visually indistinguishable
+                # flow: a held-out law has to differ in the FIELDS, not only in the
+                # formula.  What this buys is coexisting regions -- nearly inviscid
+                # where the shear is low, effectively jammed where it is high --
+                # which is the signature of a dense suspension and which no
+                # monotone model can produce at any parameter setting.
+                #
+                # Cost: the jammed regions set the viscous stability limit, so the
+                # solver's adaptive dt drops there.  Keep `viscosity` in the lower
+                # part of the corpus range (see gen_val_nonmonotonic.json) so
+                # mu * A stays near the training band rather than far above it.
+                x2 = gamma_dot_sq / gamma_scale ** 2
+                x8 = (x2 * x2) ** 2
+                A = 5.0 + 45.0 * n                 # plateau, 18..46 over visc_n<1
+                factor = (min_fact + (1 - min_fact) / (1 + x2)
+                          + (A - min_fact) * x8 / (x8 + 25.62890625))   # onset 1.5
             else:
                 raise ValueError(f"Unknown viscosity model: {self.visc_model}")
         a1 = -2 * mu * factor
